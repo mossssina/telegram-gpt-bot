@@ -1,0 +1,16 @@
+[Unit]
+Description=Studiosuccess Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=yc-user
+WorkingDirectory=/home/yc-user/telegram-gpt-bot
+ExecStart=/home/yc-user/telegram-gpt-bot/.venv/bin/python /home/yc-user/telegram-gpt-bot/bot.py
+Restart=always
+RestartSec=5
+
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

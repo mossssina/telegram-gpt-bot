@@ -1,0 +1,121 @@
+{
+  "4room": {
+    "title": "4ROOM STUDIO",
+    "chat_id": "-1001736507426",
+    "type": "supergroup",
+    "thread_id": null,
+    "project_slug": "4room"
+  },
+  "ach_interiors": {
+    "title": "A.C.H.interiors",
+    "chat_id": "-4729481224",
+    "type": "supergroup",
+    "thread_id": null,
+    "project_slug": "ach_interiors"
+  },
+  "anna_zueva_design": {
+    "title": "anna_zueva_design",
+    "chat_id": "-4986960772",
+    "type": "supergroup",
+    "thread_id": null,
+    "project_slug": "anna_zueva_design"
+  },
+  "bono_buro": {
+    "title": "bono_buro",
+    "chat_id": "-5422900295",
+    "type": "supergroup",
+    "thread_id": null,
+    "project_slug": "bono_buro"
+  },
+  "cartelledesign": {
+    "title": "CARTELLE DESIGN",
+    "chat_id": "-4704711188",
+    "type": "supergroup",
+    "thread_id": null,
+    "project_slug": "cartelledesign"
+  },
+  "chehova4": {
+    "title": "CHEHOVA4",
+    "chat_id": "-1001963957901",
+    "type": "supergroup",
+    "thread_id": null,
+    "project_slug": "chehova4"
+  },
+  "elenapotemkina": {
+    "title": "elenapotemkina",
+    "chat_id": "-1003948949299",
+    "type": "supergroup",
+    "thread_id": null,
+    "project_slug": "elenapotemkina"
+  },
+  "ink_interior_design": {
+    "title": "ink_interior_design",
+    "chat_id": "-1003928896290",
+    "type": "supergroup",
+    "thread_id": null,
+    "project_slug": "ink_interior_design"
+  },
+  "invisiline": {
+    "title": "INVISILINE",
+    "chat_id": "-4192282599",
+    "type": "supergroup",
+    "thread_id": null,
+    "project_slug": "invisiline"
+  },
+  "lena_loburets": {
+    "title": "lena_loburets",
+    "chat_id": "-4538352885",
+    "type": "supergroup",
+    "thread_id": null,
+    "project_slug": "lena_loburets"
+  },
+  "m2paint": {
+    "title": "m2paint_official",
+    "chat_id": "-1003398802668",
+    "type": "supergroup",
+    "thread_id": null,
+    "project_slug": "m2paint"
+  },
+  "madique": {
+    "title": "MADIQUE",
+    "chat_id": "-1002280927765",
+    "type": "supergroup",
+    "thread_id": null,
+    "project_slug": "madique"
+  },
+  "mart": {
+    "title": "mart",
+    "chat_id": "-1003917951739",
+    "type": "supergroup",
+    "thread_id": null,
+    "project_slug": "mart"
+  },
+  "megre_design": {
+    "title": "megre_design",
+    "chat_id": "-4287713170",
+    "type": "supergroup",
+    "thread_id": null,
+    "project_slug": "megre_design"
+  },
+  "sozo_design": {
+    "title": "sozo__design",
+    "chat_id": "-4272784901",
+    "type": "supergroup",
+    "thread_id": null,
+    "project_slug": "sozo_design"
+  },
+  "startdesign": {
+    "title": "STARTDESIGN",
+    "chat_id": "-956130659",
+    "type": "supergroup",
+    "thread_id": null,
+    "project_slug": "startdesign"
+  },
+  "taiga_architects": {
+    "title": "TAIGA.ARCHITECTS",
+    "chat_id": "-5282124640",
+    "type": "supergroup",
+    "thread_id": null,
+    "project_slug": "taiga_architects"
+  }
+}

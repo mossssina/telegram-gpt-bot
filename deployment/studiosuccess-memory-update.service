@@ -1,0 +1,24 @@
+[Unit]
+Description=Studiosuccess Daily Memory Update
+After=network.target
+
+[Service]
+Type=oneshot
+User=yc-user
+WorkingDirectory=/home/yc-user/telegram-gpt-bot
+
+# Секреты загружаются из .env — не хранятся в юните
+EnvironmentFile=/home/yc-user/telegram-gpt-bot/.env
+Environment=PYTHONUNBUFFERED=1
+
+ExecStart=/home/yc-user/telegram-gpt-bot/.venv/bin/python \
+          /home/yc-user/telegram-gpt-bot/scripts/daily_memory_update.py
+
+StandardOutput=append:/home/yc-user/telegram-gpt-bot/logs/daily_memory_update.log
+StandardError=append:/home/yc-user/telegram-gpt-bot/logs/daily_memory_update.log
+
+# Даём достаточно времени для обработки всех проектов
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target

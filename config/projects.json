@@ -1,0 +1,170 @@
+{
+  "тест": {
+    "title": "Тест",
+    "folder": "client_projects/тест",
+    "memory_file": "client_projects/тест/memory.md",
+    "brief_file": "client_projects/тест/brief.md",
+    "is_active": false
+  },
+  "test": {
+    "title": "тест",
+    "folder": "client_projects/test",
+    "memory_file": "client_projects/test/memory.md",
+    "brief_file": "client_projects/test/brief.md",
+    "brief_json_file": "client_projects/test/brief.json",
+    "chat_context_file": "client_projects/test/chat_context.md",
+    "is_active": false
+  },
+  "4room": {
+    "title": "4ROOM STUDIO",
+    "folder": "client_projects/4room",
+    "memory_file": "client_projects/4room/memory.md",
+    "brief_file": "client_projects/4room/brief.md",
+    "chat_context_file": "client_projects/4room/chat_context.md",
+    "is_active": true
+  },
+  "ach_interiors": {
+    "title": "A.C.H.interiors",
+    "folder": "client_projects/ach_interiors",
+    "memory_file": "client_projects/ach_interiors/memory.md",
+    "brief_file": "client_projects/ach_interiors/brief.md",
+    "chat_context_file": "client_projects/ach_interiors/chat_context.md",
+    "is_active": true
+  },
+  "anna_zueva_design": {
+    "title": "anna_zueva_design",
+    "folder": "client_projects/anna_zueva_design",
+    "memory_file": "client_projects/anna_zueva_design/memory.md",
+    "brief_file": "client_projects/anna_zueva_design/brief.md",
+    "chat_context_file": "client_projects/anna_zueva_design/chat_context.md",
+    "is_active": true
+  },
+  "bono_buro": {
+    "title": "bono_buro",
+    "folder": "client_projects/bono_buro",
+    "memory_file": "client_projects/bono_buro/memory.md",
+    "brief_file": "client_projects/bono_buro/brief.md",
+    "chat_context_file": "client_projects/bono_buro/chat_context.md",
+    "is_active": true
+  },
+  "cartelledesign": {
+    "title": "CARTELLE DESIGN",
+    "folder": "client_projects/cartelledesign",
+    "memory_file": "client_projects/cartelledesign/memory.md",
+    "brief_file": "client_projects/cartelledesign/brief.md",
+    "chat_context_file": "client_projects/cartelledesign/chat_context.md",
+    "is_active": true
+  },
+  "chehova4": {
+    "title": "CHEHOVA4",
+    "folder": "client_projects/chehova4",
+    "memory_file": "client_projects/chehova4/memory.md",
+    "brief_file": "client_projects/chehova4/brief.md",
+    "chat_context_file": "client_projects/chehova4/chat_context.md",
+    "is_active": true
+  },
+  "elenapotemkina": {
+    "title": "elenapotemkina",
+    "folder": "client_projects/elenapotemkina",
+    "memory_file": "client_projects/elenapotemkina/memory.md",
+    "brief_file": "client_projects/elenapotemkina/brief.md",
+    "chat_context_file": "client_projects/elenapotemkina/chat_context.md",
+    "is_active": true
+  },
+  "ink_interior_design": {
+    "title": "ink_interior_design",
+    "folder": "client_projects/ink_interior_design",
+    "memory_file": "client_projects/ink_interior_design/memory.md",
+    "brief_file": "client_projects/ink_interior_design/brief.md",
+    "chat_context_file": "client_projects/ink_interior_design/chat_context.md",
+    "is_active": true
+  },
+  "invisiline": {
+    "title": "INVISILINE",
+    "folder": "client_projects/invisiline",
+    "memory_file": "client_projects/invisiline/memory.md",
+    "brief_file": "client_projects/invisiline/brief.md",
+    "chat_context_file": "client_projects/invisiline/chat_context.md",
+    "is_active": true
+  },
+  "lena_loburets": {
+    "title": "lena_loburets",
+    "folder": "client_projects/lena_loburets",
+    "memory_file": "client_projects/lena_loburets/memory.md",
+    "brief_file": "client_projects/lena_loburets/brief.md",
+    "chat_context_file": "client_projects/lena_loburets/chat_context.md",
+    "is_active": true
+  },
+  "m2paint": {
+    "title": "m2paint_official",
+    "folder": "client_projects/m2paint",
+    "memory_file": "client_projects/m2paint/memory.md",
+    "brief_file": "client_projects/m2paint/brief.md",
+    "chat_context_file": "client_projects/m2paint/chat_context.md",
+    "is_active": true
+  },
+  "madique": {
+    "title": "MADIQUE",
+    "folder": "client_projects/madique",
+    "memory_file": "client_projects/madique/memory.md",
+    "brief_file": "client_projects/madique/brief.md",
+    "chat_context_file": "client_projects/madique/chat_context.md",
+    "is_active": true
+  },
+  "mart": {
+    "title": "mart",
+    "folder": "client_projects/mart",
+    "memory_file": "client_projects/mart/memory.md",
+    "brief_file": "client_projects/mart/brief.md",
+    "chat_context_file": "client_projects/mart/chat_context.md",
+    "is_active": true
+  },
+  "megre_design": {
+    "title": "megre_design",
+    "folder": "client_projects/megre_design",
+    "memory_file": "client_projects/megre_design/memory.md",
+    "brief_file": "client_projects/megre_design/brief.md",
+    "chat_context_file": "client_projects/megre_design/chat_context.md",
+    "is_active": true
+  },
+  "shekhovtzova_tatiana": {
+    "title": "shekhovtzova_tatiana",
+    "folder": "client_projects/shekhovtzova_tatiana",
+    "memory_file": "client_projects/shekhovtzova_tatiana/memory.md",
+    "brief_file": "client_projects/shekhovtzova_tatiana/brief.md",
+    "chat_context_file": "client_projects/shekhovtzova_tatiana/chat_context.md",
+    "is_active": true
+  },
+  "sozo_design": {
+    "title": "sozo__design",
+    "folder": "client_projects/sozo_design",
+    "memory_file": "client_projects/sozo_design/memory.md",
+    "brief_file": "client_projects/sozo_design/brief.md",
+    "chat_context_file": "client_projects/sozo_design/chat_context.md",
+    "is_active": true
+  },
+  "startdesign": {
+    "title": "STARTDESIGN",
+    "folder": "client_projects/startdesign",
+    "memory_file": "client_projects/startdesign/memory.md",
+    "brief_file": "client_projects/startdesign/brief.md",
+    "chat_context_file": "client_projects/startdesign/chat_context.md",
+    "is_active": true
+  },
+  "studiodelight": {
+    "title": "studiodelight",
+    "folder": "client_projects/studiodelight",
+    "memory_file": "client_projects/studiodelight/memory.md",
+    "brief_file": "client_projects/studiodelight/brief.md",
+    "chat_context_file": "client_projects/studiodelight/chat_context.md",
+    "is_active": false
+  },
+  "taiga_architects": {
+    "title": "TAIGA.ARCHITECTS",
+    "folder": "client_projects/taiga_architects",
+    "memory_file": "client_projects/taiga_architects/memory.md",
+    "brief_file": "client_projects/taiga_architects/brief.md",
+    "chat_context_file": "client_projects/taiga_architects/chat_context.md",
+    "is_active": true
+  }
+}
