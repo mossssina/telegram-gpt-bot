@@ -44,7 +44,9 @@ def test_skips_empty_blocks():
 
     prompt = build_project_system_prompt("BASE", "Acme", ctx)
 
-    assert prompt.strip() == "BASE\n\nТы ассистент проекта «Acme»."
+    assert prompt.startswith("BASE\n\nТы ассистент проекта «Acme».")
+    assert "MEMORY" not in prompt
+    assert "БРИФ ПРОЕКТА:" not in prompt
 
 
 def test_brief_block_gets_labeled_header():
@@ -53,3 +55,16 @@ def test_brief_block_gets_labeled_header():
     prompt = build_project_system_prompt("BASE", "", ctx)
 
     assert "БРИФ ПРОЕКТА:" in prompt
+
+
+def test_isolation_clause_present_when_project_title_set():
+    prompt = build_project_system_prompt("BASE", "Acme", {})
+
+    assert "не используй и не упоминай сведения о других клиентских проектах" in prompt
+    assert "В памяти проекта нет этой информации" in prompt
+
+
+def test_isolation_clause_absent_without_project_title():
+    prompt = build_project_system_prompt("BASE", "", {})
+
+    assert "других клиентских проектах" not in prompt

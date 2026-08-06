@@ -164,11 +164,20 @@ def register_project_in_registry(slug: str, name: str):
 # Проектный чат: определение проекта по chat_id и сохранение контекста
 # ---------------------------------------------------------------------------
 
-def get_project_chat_entry(chat_id: int) -> tuple:
-    """Возвращает (slug, chat_entry) для чата, у которого project_slug задан."""
+def get_project_chat_entry(chat_id: int, thread_id=None) -> tuple:
+    """
+    Возвращает (slug, chat_entry) для чата+топика, у которого project_slug задан.
+
+    Сверяет и chat_id, и thread_id: один и тот же супергруппа-чат может быть
+    зарегистрирован под разными слагами для разных топиков (см. CHAT_REGISTRY.md).
+    Без проверки thread_id сообщение из чужого топика того же чата могло бы
+    попасть в память не того проекта.
+    """
     chats = load_chats()
     for slug, entry in chats.items():
-        if str(entry.get("chat_id", "")) == str(chat_id) and entry.get("project_slug"):
+        if (str(entry.get("chat_id", "")) == str(chat_id)
+                and entry.get("project_slug")
+                and entry.get("thread_id") == thread_id):
             return entry.get("project_slug"), entry
     return None, None
 
@@ -201,6 +210,27 @@ def load_chat_context(project_slug: str, max_chars: int = 3000) -> str:
         return content[-max_chars:] if len(content) > max_chars else content
     except Exception:
         return ""
+
+def append_staff_dialog(project_slug: str, folder: str, staff_name: str, question: str, reply: str):
+    """
+    Пишет вопрос сотрудника и ответ бота в client_projects/<slug>/staff_dialog.md.
+
+    Намеренно отдельный файл от chat_context.md: тот читает ежедневный Memory
+    Engine как реальную переписку с клиентом, а вопросы сотрудника к самому боту
+    не должны туда попадать и засорять то, что оттуда извлекается.
+    """
+    dialog_file = os.path.join(folder, "staff_dialog.md")
+    os.makedirs(os.path.dirname(dialog_file), exist_ok=True)
+    today = date.today().isoformat()
+    entry = (
+        f"\n## {today}\n"
+        f"Сотрудник:\n{staff_name}\n\nВопрос:\n{question}\n\nОтвет бота:\n{reply}\n"
+    )
+    try:
+        with open(dialog_file, "a", encoding="utf-8") as f:
+            f.write(entry)
+    except Exception as e:
+        log.error(f"[STAFF DIALOG ERROR] slug={project_slug}: {e}")
 
 # --- Вопросы брифа (строго с сайта strategy.studiosuccess.ru/hi) ---
 
@@ -241,10 +271,42 @@ BRIEF_QUESTIONS = [
 def is_staff(update: Update) -> bool:
     return update.effective_user.id in STAFF_USERS
 
+def get_active_project(user_id: int):
+    """
+    Единая точка получения активного клиентского проекта пользователя.
+
+    Каждый user_id хранит свою собственную запись в ACTIVE_PROJECTS — сотрудники
+    никогда не разделяют один и тот же активный проект. Запись всегда сверяется
+    с актуальным config/projects.json: если проект с тех пор пропал из реестра
+    (удалён или деактивирован), возвращает None вместо того, чтобы работать со
+    старыми закэшированными путями к файлам памяти.
+
+    Возвращает dict {slug, title, folder, mode, registry_entry} или None, если
+    активный проект не выбран. `registry_entry` — сырая запись из
+    config/projects.json как есть, её и нужно передавать в ContextManager(...)
+    (не собранный здесь dict — чтобы не потерять его собственную логику путей
+    по умолчанию).
+    """
+    session = ACTIVE_PROJECTS.get(user_id)
+    if not session or session.get("type") != "client":
+        return None
+    slug = session.get("slug")
+    registry = load_projects_registry()
+    entry = registry.get(slug)
+    if not entry:
+        return None
+    return {
+        "slug": slug,
+        "title": entry.get("title", session.get("name", slug)),
+        "folder": entry.get("folder", os.path.join("client_projects", slug)),
+        "mode": session.get("mode"),
+        "registry_entry": entry,
+    }
+
 def get_current_project_title(user_id: int) -> str:
-    project = ACTIVE_PROJECTS.get(user_id)
-    if project and project.get("type") == "client" and project.get("name"):
-        return project["name"]
+    project = get_active_project(user_id)
+    if project:
+        return project["title"]
     return "не выбран"
 
 def build_staff_project_header(user_id: int) -> str:
@@ -458,7 +520,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # --- Проектный чат: сохранение контекста и ответ по @упоминанию ---
     chat_id = update.effective_chat.id
-    proj_slug, chat_entry = get_project_chat_entry(chat_id)
+    thread_id = update.effective_message.message_thread_id
+    proj_slug, chat_entry = get_project_chat_entry(chat_id, thread_id)
     if proj_slug and chat_entry:
         bot_username = context.bot.username  # например StudiosuccBot
         mention = f"@{bot_username}"
@@ -485,6 +548,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         system_with_context = build_project_system_prompt(
             SYSTEM_PROMPT, project_entry.get("title", proj_slug), ctx
         )
+        log.info(
+            f"[ACTIVE PROJECT] user_id={user_id} slug={proj_slug} chat_id={chat_id} "
+            f"memory_file={cm.memory_file} chat_context_file={cm.chat_context_file} "
+            f"sections={ctx['sections_used']}"
+        )
         if is_rate_limited(user_id):
             await update.message.reply_text("Подождите немного перед следующим запросом.")
             return
@@ -499,6 +567,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             reply = response.choices[0].message.content
             cm.update_state(ctx["new_offset"])
+            append_to_chat_context(proj_slug, "Ассистент", reply)
             await update.message.reply_text(reply)
         except Exception as e:
             log.error(f"[GPT PROJECT CHAT ERROR] {e}")
@@ -541,21 +610,35 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # --- Обычный режим ---
-    project = ACTIVE_PROJECTS.get(user_id)
+    # В группах/супергруппах (рабочие чаты) бот молчит, если его явно не позвали
+    # через @упоминание — иначе он бы отвечал в любом рабочем чате всякий раз,
+    # когда у сотрудника, написавшего туда, активен режим "Задать вопрос".
+    chat_type = update.effective_chat.type
+    if chat_type in ("group", "supergroup"):
+        bot_username = context.bot.username
+        mention = f"@{bot_username}"
+        if mention.lower() not in user_text.lower():
+            return
+        user_text = user_text.replace(mention, "").replace(mention.lower(), "").strip() or user_text
+
+    project = get_active_project(user_id)
 
     if is_staff(update):
-        if project and project["type"] == "client" and project.get("mode") == "project_chat":
+        if project and project.get("mode") == "project_chat":
             # Режим вопросов по проекту — используем Memory Engine
             proj_slug = project["slug"]
-            projects = load_projects_registry()
-            project_entry = projects.get(proj_slug, {})
             staff_name = update.effective_user.username or update.effective_user.first_name or ""
 
-            cm = ContextManager(proj_slug, project_entry)
+            cm = ContextManager(proj_slug, project["registry_entry"])
             ctx = cm.prepare_context(user_text, sender_name=staff_name)
-            staff_note = f"Сотрудник задаёт вопрос по клиентскому проекту «{project['name']}»."
+            staff_note = f"Сотрудник задаёт вопрос по клиентскому проекту «{project['title']}»."
             system_with_context = build_project_system_prompt(
-                SYSTEM_PROMPT + "\n\n" + staff_note, project["name"], ctx
+                SYSTEM_PROMPT + "\n\n" + staff_note, project["title"], ctx
+            )
+            log.info(
+                f"[ACTIVE PROJECT] user_id={user_id} slug={proj_slug} "
+                f"memory_file={cm.memory_file} chat_context_file={cm.chat_context_file} "
+                f"sections={ctx['sections_used']}"
             )
             if is_rate_limited(user_id):
                 await update.message.reply_text("Подождите немного перед следующим запросом.")
@@ -569,8 +652,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     ],
                     max_tokens=GPT_MAX_TOKENS,
                 )
+                reply = response.choices[0].message.content
                 cm.update_state(ctx["new_offset"])
-                await update.message.reply_text(response.choices[0].message.content)
+                append_staff_dialog(proj_slug, project["folder"], staff_name, user_text, reply)
+                await update.message.reply_text(reply)
             except Exception as e:
                 log.error(f"[GPT ERROR] {e}")
                 await update.message.reply_text(f"Ошибка при обращении к GPT: {e}")
@@ -765,9 +850,9 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         back_kb = InlineKeyboardMarkup(
             [[InlineKeyboardButton("← К проекту", callback_data=f"select_project:{slug}")]]
         )
-        project = ACTIVE_PROJECTS.get(user_id)
+        project = get_active_project(user_id)
         brief_text = ""
-        brief_file = project.get("brief_file", "") if project else ""
+        brief_file = project["registry_entry"].get("brief_file", "") if project else ""
         if brief_file and os.path.exists(brief_file):
             try:
                 with open(brief_file, "r", encoding="utf-8") as f:
