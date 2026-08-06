@@ -451,6 +451,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------------------------------------------------------------------------
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return
     user_text = update.message.text
     user_id = update.effective_user.id
 
@@ -1047,6 +1049,10 @@ async def project_chat_status_command(update: Update, context: ContextTypes.DEFA
         return
     await update.message.reply_text("\n\n---\n\n".join(lines))
 
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    log.error(f"Необработанное исключение при обработке update={update}: {context.error}",
+              exc_info=context.error)
+
 def main():
     load_bot_state()
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
@@ -1059,6 +1065,7 @@ def main():
     app.add_handler(CommandHandler("project_chat_status", project_chat_status_command))
     app.add_handler(CallbackQueryHandler(handle_button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_error_handler(error_handler)
 
     app.run_polling()
 
