@@ -100,6 +100,7 @@ rsync -az \
 --exclude="*.pyc" \
 --exclude="logs/" \
 --exclude="client_projects/" \
+--exclude=".env" \
 ./ \
 ${REMOTE}:${REMOTE_DIR}/
 

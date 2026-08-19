@@ -32,6 +32,8 @@ config/projects.json
 | `folder` | Путь к папке проекта |
 | `memory_file` | Путь к файлу памяти (контекст для GPT) |
 | `brief_file` | Путь к файлу брифа |
+| `chat_context_file` | Путь к сырому журналу клиентского чата (опционально, по умолчанию `<folder>/chat_context.md`) |
+| `staff_dialog_file` | Путь к журналу диалогов сотрудников с ботом по проекту (опционально, по умолчанию `<folder>/staff_dialog.md`) |
 | `is_active` | `true` — проект виден в меню, `false` — скрыт |
 
 ---

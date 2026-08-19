@@ -14,6 +14,10 @@ INSTRUCTIONS = {
     "project_work":  os.path.join(_ROOT, "instructions", "02_project_work.md"),
     "content":       os.path.join(_ROOT, "instructions", "03_content_standards.md"),
     "reports":       os.path.join(_ROOT, "instructions", "04_reports.md"),
+    "chats":         os.path.join(_ROOT, "instructions", "05_chats.md"),
+    "coauthorship":  os.path.join(_ROOT, "instructions", "06_soavtorstva.md"),
+    "ad_platforms":  os.path.join(_ROOT, "instructions", "07_advertising-platforms-knowledge-base.md"),
+    "access":        os.path.join(_ROOT, "instructions", "08_dostupy.md"),
 }
 
 

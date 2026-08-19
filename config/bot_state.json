@@ -1,0 +1,15 @@
+{
+  "active_projects": {
+    "8891418526": {
+      "type": "client",
+      "name": "Acme",
+      "slug": "acme",
+      "folder": "/private/var/folders/zv/ttg01yld00j3k0xnr3k8kv0h0000gn/T/pytest-of-anastasiiamosina/pytest-40/test_staff_brief_back_to_proje0",
+      "memory_file": "",
+      "brief_file": "",
+      "mode": null,
+      "question_mode": null
+    }
+  },
+  "brief_states": {}
+}

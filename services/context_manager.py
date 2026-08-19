@@ -486,3 +486,33 @@ class ContextManager:
         state["last_update_datetime"]   = datetime.now().isoformat(timespec="seconds")
         self._save_state(state)
 
+    # -----------------------------------------------------------------------
+    # Экономный контекст для обычных вопросов
+    # -----------------------------------------------------------------------
+
+    def prepare_memory_context(self, query: str) -> dict:
+        """
+        Экономная альтернатива prepare_context() для обычных вопросов по проекту.
+
+        Только memory.md выбранного проекта — без chat_context.md, brief.md,
+        staff_dialog.md, pending_memory.md и без локального извлечения знаний.
+        Не трогает никакие offset'ы состояния: консолидация новых сведений —
+        исключительно задача daily/ручного обновления памяти, не этого метода.
+
+        Возвращает {memory_block, sections_used}.
+        """
+        selected_sections = self._select_sections(query)
+        sections = self._parse_memory_sections()
+
+        memory_block = ""
+        for section in selected_sections:
+            if section in sections and sections[section]:
+                memory_block += f"[{section.upper()}]\n{sections[section]}\n\n"
+
+        log.info(f"[MEMORY ONLY] project={self.slug} | sections={selected_sections}")
+
+        return {
+            "memory_block":  memory_block,
+            "sections_used": selected_sections,
+        }
+

@@ -143,3 +143,41 @@ def test_prepare_context_builds_index_file(tmp_path):
     cm.prepare_context("вопрос")
 
     assert os.path.exists(cm.index_file)
+
+
+# ---------------------------------------------------------------------------
+# prepare_memory_context — экономный вариант для обычных вопросов
+# ---------------------------------------------------------------------------
+
+def test_prepare_memory_context_returns_only_memory_and_sections(tmp_path):
+    cm = make_cm(tmp_path)
+    write(cm.memory_file, "## [services]\nБазовый пакет за 30000.\n")
+
+    ctx = cm.prepare_memory_context("Какая у нас цена на пакет?")
+
+    assert set(ctx.keys()) == {"memory_block", "sections_used"}
+    assert "Базовый пакет" in ctx["memory_block"]
+    assert "services" in ctx["sections_used"]
+
+
+def test_prepare_memory_context_ignores_chat_context_and_brief(tmp_path):
+    cm = make_cm(tmp_path)
+    write(cm.memory_file, "## [services]\nБазовый пакет.\n")
+    write(cm.chat_context_file, "## 2026-08-06\nUser:\nivan\n\nMessage:\nСекретная информация из чата.\n")
+    write(cm.brief_file, "Секретная информация из брифа.")
+
+    ctx = cm.prepare_memory_context("вопрос")
+
+    assert "Секретная информация из чата" not in ctx["memory_block"]
+    assert "Секретная информация из брифа" not in ctx["memory_block"]
+
+
+def test_prepare_memory_context_does_not_touch_pending_or_state(tmp_path):
+    cm = make_cm(tmp_path)
+    write(cm.memory_file, "## [forbidden]\nНельзя писать про скидки.\n")
+    write(cm.chat_context_file, "## 2026-08-06\nMessage:\nНельзя использовать слово скидка.\n")
+
+    cm.prepare_memory_context("вопрос")
+
+    assert not os.path.exists(cm.pending_file)
+    assert not os.path.exists(cm.state_file)

@@ -16,6 +16,7 @@ import json
 import re
 import shutil
 import fcntl
+import hashlib
 import logging
 import argparse
 from datetime import datetime
@@ -77,6 +78,16 @@ def _ctx_file(slug: str, entry: dict) -> str:
     return _abs(entry.get("chat_context_file", os.path.join(folder, "chat_context.md")))
 
 
+def _staff_dialog_file(slug: str, entry: dict) -> str:
+    folder = entry.get("folder", os.path.join("client_projects", slug))
+    return _abs(entry.get("staff_dialog_file", os.path.join(folder, "staff_dialog.md")))
+
+
+def _brief_file(slug: str, entry: dict) -> str:
+    folder = entry.get("folder", os.path.join("client_projects", slug))
+    return _abs(entry.get("brief_file", os.path.join(folder, "brief.md")))
+
+
 def _state_file(slug: str, entry: dict) -> str:
     return os.path.join(_folder(slug, entry), "memory_state.json")
 
@@ -90,6 +101,9 @@ def _pending_file(slug: str, entry: dict) -> str:
 _STATE_DEFAULTS = {
     "last_processed_offset": 0,
     "last_daily_update_offset": 0,
+    "last_daily_client_chat_offset": None,   # None = ещё не мигрировано
+    "last_daily_staff_dialog_offset": 0,
+    "brief_hash": None,
     "last_memory_update": None,
     "last_update_datetime": None,
     "last_daily_update_datetime": None,
@@ -97,13 +111,26 @@ _STATE_DEFAULTS = {
 
 
 def load_state(path: str) -> dict:
+    """
+    Читает memory_state.json. Если файла нет — свежие дефолты.
+    Мигрирует старое поле last_daily_update_offset в новое
+    last_daily_client_chat_offset один раз, если новое поле ещё не
+    появлялось (None) — чтобы существующие проекты не переобрабатывали
+    всю историю chat_context.md заново.
+    """
     if not os.path.exists(path):
-        return dict(_STATE_DEFAULTS)
+        state = dict(_STATE_DEFAULTS)
+        state["last_daily_client_chat_offset"] = 0
+        return state
     try:
         with open(path, "r", encoding="utf-8") as f:
-            return {**_STATE_DEFAULTS, **json.load(f)}
+            raw = json.load(f)
     except Exception:
-        return dict(_STATE_DEFAULTS)
+        raw = {}
+    state = {**_STATE_DEFAULTS, **raw}
+    if state.get("last_daily_client_chat_offset") is None:
+        state["last_daily_client_chat_offset"] = raw.get("last_daily_update_offset", 0)
+    return state
 
 
 def save_state(path: str, state: dict):
@@ -157,6 +184,43 @@ def get_new_messages(ctx_path: str, state: dict) -> tuple:
 def has_actual_messages(text: str) -> bool:
     """Проверяет, содержит ли текст реальные сообщения (не только заголовок)."""
     return "Message:" in text or "\nUser:\n" in text
+
+
+def _read_new_slice(path: str, prev_offset: int, max_chars: int = NEW_MSG_MAX_CHARS) -> tuple:
+    """
+    Обобщённая версия get_new_messages: читает текст файла после prev_offset.
+    Используется и для chat_context.md, и для staff_dialog.md — у каждого свой
+    отдельный offset в state, эта функция не завязана на конкретное имя поля.
+    Возвращает (new_text, current_offset).
+    """
+    if not os.path.exists(path):
+        return "", 0
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+    except Exception:
+        return "", 0
+
+    current_offset = len(content)
+    if prev_offset >= current_offset:
+        return "", current_offset
+
+    new_text = content[prev_offset:]
+    if len(new_text) > max_chars:
+        new_text = new_text[-max_chars:]
+
+    return new_text, current_offset
+
+
+def compute_brief_hash(path: str):
+    """SHA-256 содержимого brief.md, или None если файла нет."""
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+    except Exception:
+        return None
 
 
 # ─── Утилиты: память ─────────────────────────────────────────────────────────
@@ -328,9 +392,20 @@ def add_to_pending(pending_path: str, items: list):
 # ─── GPT ─────────────────────────────────────────────────────────────────────
 
 SYSTEM_PROMPT = (
-    "Ты менеджер памяти SMM-агентства. Твоя задача — анализировать новые сообщения "
-    "из рабочего чата проекта и определять, какие устойчивые знания нужно добавить "
-    "или обновить в базе знаний проекта.\n\n"
+    "Ты менеджер памяти SMM-агентства. Твоя задача — анализировать новые сведения "
+    "по проекту и определять, какие устойчивые знания нужно добавить или обновить "
+    "в базе знаний проекта (memory.md).\n\n"
+    "Тебе передают до трёх помеченных источников за один раз:\n"
+    "- ИСТОЧНИК: клиентский чат (chat_context.md) — реальная переписка с клиентом "
+    "в рабочем чате проекта. Это первичный, надёжный источник.\n"
+    "- ИСТОЧНИК: диалог сотрудника с ботом (staff_dialog.md) — вопросы сотрудника "
+    "агентства к самому боту и ответы бота. Ответы бота НЕ являются фактами — это "
+    "лишь сгенерированный текст. Достоверно только то, что сотрудник сам утверждает, "
+    "подтверждает или явно исправляет в своих вопросах/репликах. Если непонятно, "
+    "сам сотрудник это подтвердил или просто процитировал ответ бота — считай "
+    "неоднозначным и помещай в pending.\n"
+    "- ИСТОЧНИК: бриф проекта (brief.md) — считается изменившимся с последней "
+    "обработки, анализируй его как обычный надёжный источник, как и клиентский чат.\n\n"
     "СОХРАНЯТЬ:\n"
     "- изменения позиционирования и особенности бренда\n"
     "- целевая аудитория, tone of voice\n"
@@ -338,14 +413,15 @@ SYSTEM_PROMPT = (
     "- запрещённые слова и приёмы\n"
     "- принятые решения и договорённости\n"
     "- регулярные процессы, партнёры, подрядчики\n"
-    "- новые услуги и направления\n"
+    "- новые услуги и направления, изменения цен и позиционирования\n"
     "- долгосрочные предпочтения клиента\n"
     "- актуальные сроки и регулярные обязательства\n\n"
     "НЕ СОХРАНЯТЬ:\n"
     "- приветствия, благодарности\n"
-    "- временные обсуждения и промежуточные версии\n"
+    "- временные обсуждения и промежуточные версии, черновики\n"
     "- разовые организационные сообщения\n"
-    "- неподтверждённые предположения\n\n"
+    "- неподтверждённые предположения и идеи\n"
+    "- ответы бота из staff_dialog.md как будто это достоверные факты\n\n"
     "ПРОТИВОРЕЧИЯ: если новое знание противоречит существующему — помести в updates "
     "(новое имеет приоритет). Если неоднозначно — помести в pending.\n\n"
     "Верни ТОЛЬКО валидный JSON без пояснений:\n"
@@ -358,23 +434,49 @@ SYSTEM_PROMPT = (
     'Если нет изменений — верни {"additions":[],"updates":[],"pending":[]}.'
 )
 
+_SOURCE_LABELS = {
+    "client_chat":  "ИСТОЧНИК: клиентский чат (chat_context.md)",
+    "staff_dialog": "ИСТОЧНИК: диалог сотрудника с ботом (staff_dialog.md, "
+                    "ответы бота ненадёжны)",
+    "brief":        "ИСТОЧНИК: бриф проекта (brief.md, изменился с последней обработки)",
+}
 
-def call_gpt(oai: OpenAI, project_title: str,
-             new_messages: str, sections_summary: dict) -> dict:
+
+def build_consolidation_user_content(project_title: str, source_blocks: dict,
+                                     sections_summary: dict) -> str:
     """
-    Вызывает GPT для анализа новых сообщений.
-    Отправляет только: new_messages + краткое резюме разделов (не весь memory.md).
+    Собирает текст user-сообщения для GPT из размеченных блоков источников.
+    Вынесено из call_gpt отдельной чистой функцией, чтобы проверять сборку
+    промпта тестами без реального вызова OpenAI.
     """
     summary_lines = "\n".join(
         f"[{name}]: {val[:SECTION_SUMMARY_CHARS].replace(chr(10), ' ')}"
         for name, val in sections_summary.items()
     )
-    user_content = (
+    source_sections = "\n\n".join(
+        f"{_SOURCE_LABELS[key]}:\n{text}"
+        for key, text in source_blocks.items()
+        if key in _SOURCE_LABELS and text
+    )
+    return (
         f"ПРОЕКТ: {project_title}\n\n"
         f"РАЗДЕЛЫ ПАМЯТИ (краткое содержание):\n"
         f"{summary_lines if summary_lines else '(память пуста)'}\n\n"
-        f"НОВЫЕ СООБЩЕНИЯ ИЗ ЧАТА:\n{new_messages}"
+        f"{source_sections}"
     )
+
+
+def call_gpt(oai: OpenAI, project_title: str,
+             source_blocks: dict, sections_summary: dict) -> dict:
+    """
+    Вызывает GPT для анализа новых сведений по проекту.
+
+    source_blocks — {"client_chat": "...", "staff_dialog": "...", "brief": "..."},
+    только для реально изменившихся источников (экономия токенов — не шлём то,
+    что не изменилось). Каждый блок явно маркирован в prompt.
+    Отправляет краткое резюме разделов памяти, а не весь memory.md.
+    """
+    user_content = build_consolidation_user_content(project_title, source_blocks, sections_summary)
 
     response = oai.chat.completions.create(
         model=GPT_MODEL,
@@ -397,6 +499,15 @@ def call_gpt(oai: OpenAI, project_title: str,
 
 # ─── Обработка одного проекта ─────────────────────────────────────────────────
 
+def _advance_state(state: dict, client_offset: int, staff_offset: int, brief_hash) -> None:
+    """Продвигает офсеты/hash всех трёх источников (идемпотентно для тех, что не менялись)."""
+    state["last_daily_client_chat_offset"]  = client_offset
+    state["last_daily_update_offset"]       = client_offset  # обратная совместимость
+    state["last_daily_staff_dialog_offset"] = staff_offset
+    state["brief_hash"]                     = brief_hash
+    state["last_daily_update_datetime"]     = datetime.now().isoformat(timespec="seconds")
+
+
 def process_project(oai: OpenAI, slug: str, entry: dict, dry_run: bool) -> dict:
     stats = {
         "slug":          slug,
@@ -412,44 +523,65 @@ def process_project(oai: OpenAI, slug: str, entry: dict, dry_run: bool) -> dict:
         "error":         None,
         "skipped":       False,
         "skip_reason":   "",
+        "sources_used":  [],
     }
 
-    folder       = _folder(slug, entry)
-    memory_path  = _memory_file(slug, entry)
-    ctx_path     = _ctx_file(slug, entry)
-    state_path   = _state_file(slug, entry)
-    pending_path = _pending_file(slug, entry)
+    folder            = _folder(slug, entry)
+    memory_path       = _memory_file(slug, entry)
+    ctx_path          = _ctx_file(slug, entry)
+    staff_dialog_path = _staff_dialog_file(slug, entry)
+    brief_path        = _brief_file(slug, entry)
+    state_path        = _state_file(slug, entry)
+    pending_path      = _pending_file(slug, entry)
 
     # 1. Состояние
     state = load_state(state_path)
 
-    # 2. Новые сообщения (по last_daily_update_offset)
-    new_messages, current_offset = get_new_messages(ctx_path, state)
+    # 2. Новые данные по каждому из трёх источников — независимые офсеты/hash
+    new_client_text, client_offset = _read_new_slice(
+        ctx_path, state["last_daily_client_chat_offset"])
+    new_staff_text, staff_offset = _read_new_slice(
+        staff_dialog_path, state["last_daily_staff_dialog_offset"])
+    brief_hash = compute_brief_hash(brief_path)
 
-    if not new_messages.strip():
-        stats["skipped"] = True
-        stats["skip_reason"] = "нет новых символов"
-        stats["status"] = "skipped"
-        return stats
+    client_meaningful = bool(new_client_text.strip()) and has_actual_messages(new_client_text)
+    staff_meaningful   = bool(new_staff_text.strip())
+    brief_changed      = brief_hash != state.get("brief_hash")
 
-    if not has_actual_messages(new_messages):
-        # Только заголовок файла — двигаем offset и пропускаем
+    stats["new_msg_chars"] = len(new_client_text) + len(new_staff_text)
+
+    # 3. Ничего не изменилось ни в одном источнике — GPT не вызываем вообще
+    if not (client_meaningful or staff_meaningful or brief_changed):
         if not dry_run:
-            state["last_daily_update_offset"] = current_offset
+            _advance_state(state, client_offset, staff_offset, brief_hash)
             save_state(state_path, state)
         stats["skipped"] = True
-        stats["skip_reason"] = "нет реальных сообщений (только заголовок)"
+        stats["skip_reason"] = "нет изменений ни в одном источнике"
         stats["status"] = "skipped"
         return stats
 
-    stats["new_msg_chars"] = len(new_messages)
+    # 4. Собираем блоки только по изменившимся источникам (экономия токенов)
+    source_blocks = {}
+    if client_meaningful:
+        source_blocks["client_chat"] = new_client_text
+        stats["sources_used"].append("client_chat")
+    if staff_meaningful:
+        source_blocks["staff_dialog"] = new_staff_text
+        stats["sources_used"].append("staff_dialog")
+    if brief_changed and os.path.exists(brief_path):
+        try:
+            with open(brief_path, "r", encoding="utf-8") as f:
+                source_blocks["brief"] = f.read()[:NEW_MSG_MAX_CHARS]
+            stats["sources_used"].append("brief")
+        except Exception:
+            pass
 
-    # 3. Краткое резюме памяти (без отправки всего memory.md)
+    # 5. Краткое резюме памяти (без отправки всего memory.md)
     sections_summary = get_sections_summary(memory_path)
 
-    # 4. GPT-вызов
+    # 6. GPT-вызов — один на проект за запуск
     try:
-        gpt_result = call_gpt(oai, entry.get("title", slug), new_messages, sections_summary)
+        gpt_result = call_gpt(oai, entry.get("title", slug), source_blocks, sections_summary)
     except Exception as e:
         stats["status"] = "error"
         stats["error"] = f"GPT ошибка: {e}"
@@ -461,11 +593,11 @@ def process_project(oai: OpenAI, slug: str, entry: dict, dry_run: bool) -> dict:
     stats["found"]         = len(additions) + len(updates) + len(pending)
     stats["pending_count"] = len(pending)
 
-    # 5. Dry-run — предпросмотр без записи
+    # 7. Dry-run — предпросмотр без записи
     if dry_run:
-        today = datetime.now().strftime("%Y-%m-%d")
         print(f"\n  Проект: {entry.get('title', slug)}  (slug: {slug})")
-        print(f"  Новых символов: {len(new_messages)}")
+        print(f"  Источники: {', '.join(stats['sources_used']) or '—'}")
+        print(f"  Новых символов: {stats['new_msg_chars']}")
         if additions:
             print(f"  Добавления ({len(additions)}):")
             for a in additions:
@@ -484,7 +616,7 @@ def process_project(oai: OpenAI, slug: str, entry: dict, dry_run: bool) -> dict:
             print("  GPT не нашёл изменений для постоянной памяти")
         return stats
 
-    # 6. Фильтрация дублей
+    # 8. Фильтрация дублей
     filtered_additions = []
     for a in additions:
         if is_duplicate(a.get("text", ""), memory_path, pending_path):
@@ -492,15 +624,14 @@ def process_project(oai: OpenAI, slug: str, entry: dict, dry_run: bool) -> dict:
         else:
             filtered_additions.append(a)
 
-    # 7. Если реальных изменений нет — только продвигаем offset, GPT уже вызван
+    # 9. Если реальных изменений нет — только продвигаем офсеты/hash, GPT уже вызван
     if not filtered_additions and not updates and not pending:
-        state["last_daily_update_offset"]   = current_offset
-        state["last_daily_update_datetime"] = datetime.now().isoformat(timespec="seconds")
+        _advance_state(state, client_offset, staff_offset, brief_hash)
         save_state(state_path, state)
         stats["status"] = "no_net_changes"
         return stats
 
-    # 8. Резервная копия ПЕРЕД изменениями
+    # 10. Резервная копия ПЕРЕД изменениями
     backup_path = None
     if os.path.exists(memory_path):
         try:
@@ -510,7 +641,7 @@ def process_project(oai: OpenAI, slug: str, entry: dict, dry_run: bool) -> dict:
             stats["error"] = f"Ошибка бэкапа: {e}"
             return stats
 
-    # 9. Применяем изменения (под локом — конкурирует с живым путём ContextManager)
+    # 11. Применяем изменения (под локом — конкурирует с живым путём ContextManager)
     today = datetime.now().strftime("%Y-%m-%d")
     try:
         with project_lock(folder):
@@ -530,19 +661,18 @@ def process_project(oai: OpenAI, slug: str, entry: dict, dry_run: bool) -> dict:
             if pending:
                 add_to_pending(pending_path, pending)
 
-        # 10. Перестраиваем индекс через существующий ContextManager
+        # 12. Перестраиваем индекс через существующий ContextManager
         # (собственный лок внутри _build_memory_index — вне блока выше, чтобы не блокировать самих себя)
         cm = ContextManager(slug, entry)
         cm._build_memory_index()
         stats["index_rebuilt"] = True
 
-        # 11. Обновляем offset (только daily)
-        state["last_daily_update_offset"]   = current_offset
-        state["last_daily_update_datetime"] = datetime.now().isoformat(timespec="seconds")
-        state["last_memory_update"]         = datetime.now().isoformat(timespec="seconds")
+        # 13. Обновляем офсеты/hash (только daily) + отметку об обновлении памяти
+        _advance_state(state, client_offset, staff_offset, brief_hash)
+        state["last_memory_update"] = datetime.now().isoformat(timespec="seconds")
         save_state(state_path, state)
 
-        # 12. Чистим старые бэкапы (оставляем MAX_BACKUPS)
+        # 14. Чистим старые бэкапы (оставляем MAX_BACKUPS)
         cleanup_old_backups(folder)
 
     except Exception as e:
@@ -555,12 +685,16 @@ def process_project(oai: OpenAI, slug: str, entry: dict, dry_run: bool) -> dict:
                 stats["error"] += " | ОТКАТ ВЫПОЛНЕН"
             except Exception as re_err:
                 stats["error"] += f" | ОТКАТ НЕ УДАЛСЯ: {re_err}"
-        # offset НЕ продвигаем при ошибке
+        # offset/hash НЕ продвигаем при ошибке
 
     return stats
 
 
 # ─── Основной запуск ──────────────────────────────────────────────────────────
+
+def _print_json_summary(summary: dict):
+    print(json.dumps(summary, ensure_ascii=False))
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -568,11 +702,24 @@ def main():
     )
     parser.add_argument("--dry-run", action="store_true",
                         help="Только предпросмотр изменений без записи")
+    parser.add_argument("--json-summary", action="store_true",
+                        help="Вывести машиночитаемый итог в stdout (для вызова из бота)")
     args = parser.parse_args()
     dry_run = args.dry_run
+    json_summary = args.json_summary
+
+    if json_summary:
+        # Человекочитаемые логи продолжают писаться в файл, но не в stdout —
+        # там должна остаться только одна финальная строка JSON.
+        log.removeHandler(_sh)
 
     log.info("=" * 55)
     log.info(f"daily_memory_update запущен {'[DRY-RUN]' if dry_run else '[PRODUCTION]'}")
+
+    summary = {
+        "status": "ok", "processed": 0, "skipped": 0,
+        "added": 0, "updated": 0, "errors": 0, "gpt_calls": 0,
+    }
 
     # Защита от параллельного запуска (lock-файл + fcntl)
     os.makedirs(LOGS_DIR, exist_ok=True)
@@ -581,17 +728,25 @@ def main():
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except (IOError, OSError):
         log.warning("Другой процесс уже выполняет обновление памяти. Завершение.")
-        sys.exit(0)
+        summary["status"] = "already_running"
+        if json_summary:
+            _print_json_summary(summary)
+        sys.exit(2)
 
     try:
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
             log.error("OPENAI_API_KEY не задан в .env")
+            summary["status"] = "fatal_error"
+            if json_summary:
+                _print_json_summary(summary)
             sys.exit(1)
 
         projects = load_projects()
         if not projects:
             log.info("Активных проектов не найдено.")
+            if json_summary:
+                _print_json_summary(summary)
             return
 
         log.info(f"Активных проектов: {len(projects)}")
@@ -620,6 +775,7 @@ def main():
             gpt_calls += 1
             log.info(
                 f"[{slug}] "
+                f"источники={','.join(stats['sources_used']) or '—'} | "
                 f"символов={stats['new_msg_chars']} | "
                 f"найдено={stats['found']} | "
                 f"добавлено={stats['added']} | "
@@ -642,6 +798,20 @@ def main():
             f"ошибок={total_errors} | пропущено={total_skipped} | "
             f"GPT-вызовов={gpt_calls}"
         )
+
+        summary.update({
+            "status":    "completed_with_errors" if total_errors else "ok",
+            "processed": gpt_calls,
+            "skipped":   total_skipped,
+            "added":     total_added,
+            "updated":   total_updated,
+            "errors":    total_errors,
+            "gpt_calls": gpt_calls,
+        })
+        if json_summary:
+            _print_json_summary(summary)
+        if total_errors:
+            sys.exit(3)
 
     finally:
         try:

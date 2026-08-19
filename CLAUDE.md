@@ -117,7 +117,7 @@ Two things to know if you touch this:
   The main bot's unit file exists on the server but isn't version-controlled here.
 - The remote venv is `.venv/` (deploy.sh installs into and runs from `.venv/bin/...`), while local
   dev uses `venv/` (no dot) — don't assume they're the same path.
-- The timer fires `OnCalendar=*-*-* 21:00:00 UTC`, i.e. 00:00 Moscow time.
+- The timer fires `OnCalendar=*-*-* 06:00:00 UTC`, i.e. 09:00 Moscow time.
 
 ## Known gotchas / state to be aware of
 

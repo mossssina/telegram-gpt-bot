@@ -3,8 +3,9 @@ import re
 import sys
 import json
 import time
+import asyncio
 import logging
-from datetime import date
+from datetime import date, datetime, timezone
 from dotenv import load_dotenv
 from openai import OpenAI
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -12,6 +13,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, Con
 from services.context_manager import ContextManager
 from services.prompt_builder import build_project_system_prompt
 from services.instruction_manager import load_instruction
+from services.file_lock import project_lock
 
 load_dotenv()
 
@@ -41,7 +43,6 @@ STAFF_USERS = [
 
 
 ACTIVE_PROJECTS = {}
-LAST_BOT_MESSAGE = {}
 BRIEF_STATES = {}
 
 # ---------------------------------------------------------------------------
@@ -232,6 +233,132 @@ def append_staff_dialog(project_slug: str, folder: str, staff_name: str, questio
     except Exception as e:
         log.error(f"[STAFF DIALOG ERROR] slug={project_slug}: {e}")
 
+# ---------------------------------------------------------------------------
+# Структурированная история диалогов проекта (dialog_history.jsonl)
+# ---------------------------------------------------------------------------
+#
+# В отличие от staff_dialog.md (человекочитаемый общий лог, который продолжает
+# вестись как раньше), этот файл пригоден для пагинации, выборки сообщений
+# конкретного сотрудника и сборки короткого контекста продолжения диалога.
+# Каждая строка — отдельный JSON-объект. Не используется Memory Engine.
+
+DIALOG_HISTORY_FILENAME = "dialog_history.jsonl"
+MAX_CONTINUE_PAIRS = 3
+MAX_CONTINUE_CHARS = 12000
+HISTORY_PAGE_SIZE = 5
+
+_SAVED_DIALOG_UPDATE_IDS = set()
+
+
+def load_dialog_history(folder: str, user_id=None) -> list:
+    """
+    Читает dialog_history.jsonl целиком (старые записи первыми). Если передан
+    user_id — возвращает только записи этого сотрудника (для персонального
+    контекста продолжения); иначе — все записи проекта (для общего просмотра).
+    Битые строки пропускаются, ошибка чтения файла только логируется.
+    """
+    path = os.path.join(folder, DIALOG_HISTORY_FILENAME)
+    if not os.path.exists(path):
+        return []
+    records = []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                if user_id is None or rec.get("user_id") == user_id:
+                    records.append(rec)
+    except Exception as e:
+        log.error(f"[DIALOG HISTORY READ ERROR] folder={folder}: {e}")
+        return []
+    return records
+
+
+def append_dialog_history(project_slug: str, folder: str, user_id: int, username: str,
+                           question: str, answer: str) -> bool:
+    """Добавляет одну запись в dialog_history.jsonl. Возвращает True/False по факту записи."""
+    os.makedirs(folder, exist_ok=True)
+    record = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "user_id": user_id,
+        "username": username,
+        "project_slug": project_slug,
+        "question": question,
+        "answer": answer,
+    }
+    try:
+        with open(os.path.join(folder, DIALOG_HISTORY_FILENAME), "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        return True
+    except Exception as e:
+        log.error(f"[DIALOG HISTORY ERROR] slug={project_slug}: {e}")
+        return False
+
+
+def save_dialog_turn(project_slug: str, folder: str, user_id: int, username: str,
+                      question: str, answer: str, update_id=None) -> bool:
+    """
+    Сохраняет один обмен «вопрос-ответ»: и в структурированный dialog_history.jsonl,
+    и (под тем же project_lock) в читаемый staff_dialog.md через уже существующий
+    append_staff_dialog — так одновременная запись двух сотрудников не повредит
+    ни один из файлов. Дедуплицирует по update_id: при повторной доставке одного и
+    того же Telegram update повторной записи не будет. Никогда не поднимает
+    исключение наружу — ошибка только логируется, вызывающий код узнаёт об этом по
+    возвращаемому False и не теряет уже отправленный сотруднику ответ GPT.
+    """
+    if update_id is not None:
+        if update_id in _SAVED_DIALOG_UPDATE_IDS:
+            log.info(f"[DIALOG HISTORY] update_id={update_id} уже сохранён — пропуск повтора.")
+            return True
+        _SAVED_DIALOG_UPDATE_IDS.add(update_id)
+        if len(_SAVED_DIALOG_UPDATE_IDS) > 2000:
+            _SAVED_DIALOG_UPDATE_IDS.clear()
+    try:
+        with project_lock(folder):
+            ok = append_dialog_history(project_slug, folder, user_id, username, question, answer)
+            append_staff_dialog(project_slug, folder, username, question, answer)
+        return ok
+    except Exception as e:
+        log.error(f"[DIALOG SAVE ERROR] slug={project_slug}: {e}")
+        return False
+
+
+def build_continue_messages(pairs: list, max_chars: int = MAX_CONTINUE_CHARS) -> list:
+    """
+    Превращает пары {question, answer} в сообщения для Chat Completions
+    (user/assistant по очереди, от старых к новым). Если суммарная длина текста
+    превышает max_chars, удаляет из начала (самые старые) пары, пока не уложится.
+    """
+    pairs = list(pairs)
+
+    def total_len(ps):
+        return sum(len(p.get("question", "")) + len(p.get("answer", "")) for p in ps)
+
+    while pairs and total_len(pairs) > max_chars:
+        pairs.pop(0)
+    messages = []
+    for p in pairs:
+        messages.append({"role": "user", "content": p.get("question", "")})
+        messages.append({"role": "assistant", "content": p.get("answer", "")})
+    return messages
+
+
+def format_dialog_pairs(pairs: list) -> str:
+    """Человекочитаемый рендер записей истории для Telegram. Никогда не идёт в GPT."""
+    blocks = []
+    for rec in pairs:
+        blocks.append(
+            f"Сотрудник: {rec.get('username') or rec.get('user_id', '?')}\n"
+            f"Вопрос: {rec.get('question', '')}\n"
+            f"Ответ: {rec.get('answer', '')}"
+        )
+    return "\n\n---\n\n".join(blocks)
+
 # --- Вопросы брифа (строго с сайта strategy.studiosuccess.ru/hi) ---
 
 BRIEF_QUESTIONS = [
@@ -271,6 +398,39 @@ BRIEF_QUESTIONS = [
 def is_staff(update: Update) -> bool:
     return update.effective_user.id in STAFF_USERS
 
+def _check_mention(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> tuple:
+    """
+    Определяет, упомянут ли бот в сообщении. Возвращает (is_mention, clean_text).
+
+    Предпочитает entities сообщения (тип "mention", точное сравнение username без
+    учёта регистра) — надёжнее, чем подстрока, которая может случайно совпасть
+    внутри произвольного текста или URL. Резервный вариант — точное вхождение
+    "@username" без учёта регистра, когда entities недоступны (например, в
+    упрощённых Update в тестах).
+    """
+    bot_username = (context.bot.username or "").lower()
+    if not bot_username:
+        return False, text
+    message = update.message
+    if hasattr(message, "entities") and message.entities is not None:
+        # entities — авторитетный источник (так их видит сам Telegram): даже
+        # пустой список означает "упоминаний нет", подстрока внутри произвольного
+        # текста/email/URL не должна засчитываться как обращение к боту.
+        for ent in message.entities:
+            if ent.type == "mention":
+                entity_text = text[ent.offset: ent.offset + ent.length]
+                if entity_text.lstrip("@").lower() == bot_username:
+                    clean = (text[:ent.offset] + text[ent.offset + ent.length:]).strip()
+                    return True, clean
+        return False, text
+    # entities недоступны (нестандартный/упрощённый Update) — резервный вариант.
+    mention = f"@{bot_username}"
+    idx = text.lower().find(mention)
+    if idx == -1:
+        return False, text
+    clean = (text[:idx] + text[idx + len(mention):]).strip()
+    return True, clean
+
 def get_active_project(user_id: int):
     """
     Единая точка получения активного клиентского проекта пользователя.
@@ -300,6 +460,7 @@ def get_active_project(user_id: int):
         "title": entry.get("title", session.get("name", slug)),
         "folder": entry.get("folder", os.path.join("client_projects", slug)),
         "mode": session.get("mode"),
+        "question_mode": session.get("question_mode"),
         "registry_entry": entry,
     }
 
@@ -344,6 +505,49 @@ def is_rate_limited(user_id: int) -> bool:
         return True
     LAST_GPT_CALL[user_id] = now
     return False
+
+# ---------------------------------------------------------------------------
+# Безопасная отправка длинных ответов GPT (лимит сообщения Telegram — 4096
+# символов; берём запас — 3800, как и в send_ui_screen)
+# ---------------------------------------------------------------------------
+
+GPT_REPLY_CHUNK_SIZE = 3800
+
+
+def split_text_for_telegram(text: str, max_len: int = GPT_REPLY_CHUNK_SIZE) -> list:
+    """
+    Режет text на части не длиннее max_len для отправки в Telegram. Предпочитает
+    резать по границе абзаца ("\n\n"), затем по строке ("\n"), и только если
+    сам абзац/строка длиннее лимита — жёстко по max_len символов.
+
+    "".join(chunks) == text всегда — ни один символ не теряется и не переставляется.
+    """
+    if len(text) <= max_len:
+        return [text]
+    chunks = []
+    remaining = text
+    while len(remaining) > max_len:
+        window = remaining[:max_len]
+        cut = window.rfind("\n\n")
+        if cut == -1:
+            cut = window.rfind("\n")
+        if cut <= 0:
+            cut = max_len
+        chunks.append(remaining[:cut])
+        remaining = remaining[cut:]
+    if remaining:
+        chunks.append(remaining)
+    return chunks
+
+
+async def send_gpt_reply(update, reply: str):
+    """
+    Отправляет ответ GPT одним или несколькими сообщениями (см. split_text_for_telegram).
+    Не вызывает GPT повторно, не участвует в ui_screens (как и весь путь
+    handle_message) — это ответ на вопрос, а не UI-экран меню.
+    """
+    for chunk in split_text_for_telegram(reply):
+        await update.message.reply_text(chunk)
 
 # ---------------------------------------------------------------------------
 # Файловые операции: брифы
@@ -452,7 +656,12 @@ async def advance_brief(user_id: int, send_fn, context=None):
     if q["type"] == "text":
         await send_fn(text)
     elif q["type"] == "single":
-        keyboard = [[InlineKeyboardButton(opt, callback_data=f"brief_opt:{opt}")] for opt in q["options"]]
+        # question_index зашит в callback_data, чтобы обработчик мог отличить
+        # ответ на ТЕКУЩИЙ вопрос от повторного/устаревшего нажатия старой кнопки.
+        keyboard = [
+            [InlineKeyboardButton(opt, callback_data=f"brief_opt:{idx}:{opt_idx}")]
+            for opt_idx, opt in enumerate(q["options"])
+        ]
         await send_fn(text, InlineKeyboardMarkup(keyboard))
     elif q["type"] == "multi":
         state["current_multi_selection"] = []
@@ -461,19 +670,113 @@ async def advance_brief(user_id: int, send_fn, context=None):
         await send_fn(text, InlineKeyboardMarkup(keyboard))
 
 # ---------------------------------------------------------------------------
-# Сообщения
+# UI-экраны: удаление предыдущего локального меню/раздела при навигации
 # ---------------------------------------------------------------------------
+#
+# Хранилище — context.user_data["ui_screens"] = {str(chat_id): [message_id, ...]}.
+# user_data уже изолирован по пользователю самим python-telegram-bot, здесь
+# дополнительно разбито по chat_id — чтобы приватный чат сотрудника и групповой
+# чат, где он тоже что-то нажал, не путали экраны друг друга.
+#
+# Только для интерфейсных сообщений (меню, инструкции, карточки, подтверждения).
+# Никогда не трогает: сообщения пользователей, вопросы/ответы GPT, сообщения из
+# групповых/проектных чатов, итог ручного обновления памяти, шаги брифа-визарда
+# (те — часть отдельного, линейного Q&A-потока, и намеренно вне этой системы).
 
-async def send_clean_message(update, text, reply_markup=None):
-    user_id = update.effective_user.id
-    try:
-        old_message_id = LAST_BOT_MESSAGE.get(user_id)
-        if old_message_id:
-            await update.effective_chat.delete_message(old_message_id)
-    except Exception:
-        pass
-    sent_message = await update.message.reply_text(text, reply_markup=reply_markup)
-    LAST_BOT_MESSAGE[user_id] = sent_message.message_id
+def _ui_screens(context) -> dict:
+    return context.user_data.setdefault("ui_screens", {})
+
+
+def register_ui_messages(update, context, messages, replace=True):
+    """
+    Регистрирует message_id, относящиеся к текущему UI-экрану этого чата.
+
+    messages — один Message/int или список Message/int.
+    replace=True (по умолчанию) — заменяет список текущего экрана целиком (новый
+    экран); replace=False — добавляет к уже зарегистрированным (для составления
+    одного многочастного экрана из нескольких сообщений).
+    """
+    chat_id = update.effective_chat.id
+    screens = _ui_screens(context)
+    key = str(chat_id)
+    seq = messages if isinstance(messages, (list, tuple)) else [messages]
+    ids = [m.message_id if hasattr(m, "message_id") else m for m in seq]
+    if replace or key not in screens:
+        screens[key] = ids
+    else:
+        screens[key].extend(ids)
+
+
+async def clear_ui_screen(update, context):
+    """
+    Удаляет все зарегистрированные сообщения текущего UI-экрана этого чата.
+
+    Ошибки удаления (сообщение уже удалено, слишком старое, сетевая ошибка и
+    т.п.) только логируются — никогда не прерывают переход и не поднимаются
+    наружу. Дополнительно всегда пытается удалить само сообщение с нажатой
+    кнопкой (update.callback_query.message), даже если оно не было
+    зарегистрировано — это покрывает и потерю состояния после перезапуска
+    бота, и случаи, когда предыдущий экран в принципе не участвовал в этой
+    системе (например, последний шаг брифа-визарда).
+    """
+    chat_id = update.effective_chat.id
+    screens = _ui_screens(context)
+    key = str(chat_id)
+    message_ids = list(screens.get(key, []))
+
+    query = getattr(update, "callback_query", None)
+    if query is not None and query.message is not None:
+        fallback_id = query.message.message_id
+        if fallback_id not in message_ids:
+            message_ids.append(fallback_id)
+
+    for mid in message_ids:
+        try:
+            await context.bot.delete_message(chat_id=chat_id, message_id=mid)
+        except Exception as e:
+            log.info(f"[UI CLEANUP] Не удалось удалить message_id={mid} chat_id={chat_id}: {e}")
+
+    screens[key] = []
+
+
+async def send_ui_screen(update, context, text, reply_markup=None) -> list:
+    """
+    Отправляет экран новым сообщением (или несколькими, если text длиннее
+    лимита Telegram) и регистрирует все message_id как принадлежащие текущему
+    UI-экрану. Клавиатура прикрепляется только к последнему сообщению. Ничего
+    не удаляет — за это отвечает clear_ui_screen, вызываемый до этого.
+    """
+    chat_id = update.effective_chat.id
+    MAX = 3800
+    if len(text) <= MAX:
+        msg = await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
+        sent = [msg]
+    else:
+        chunks = [text[i:i + MAX] for i in range(0, len(text), MAX)]
+        sent = []
+        for i, chunk in enumerate(chunks):
+            kb = reply_markup if i == len(chunks) - 1 else None
+            msg = await context.bot.send_message(chat_id=chat_id, text=chunk, reply_markup=kb)
+            sent.append(msg)
+    register_ui_messages(update, context, sent, replace=True)
+    return sent
+
+
+async def _show_project_not_found(update, context):
+    """
+    Единая точка ответа для любой кнопки, работающей с конкретным проектом по
+    slug (staff_brief:/staff_new:/staff_cont:/staff_hist:), когда этот slug
+    отсутствует в реестре или деактивирован. Вызывается ДО чтения файлов
+    проекта, изменения ACTIVE_PROJECTS или обращения к GPT.
+    """
+    await clear_ui_screen(update, context)
+    await send_ui_screen(
+        update, context,
+        "Проект не найден или больше не активен.",
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("← К проектам", callback_data="staff_select_project")]]
+        )
+    )
 
 # ---------------------------------------------------------------------------
 # Меню
@@ -486,6 +789,7 @@ def build_start_menu(user_id: int):
         keyboard = [
             [InlineKeyboardButton("Выбрать проект", callback_data="staff_select_project")],
             [InlineKeyboardButton("📚 Инструкции", callback_data="menu_instructions")],
+            [InlineKeyboardButton("Обновить память по проектам", callback_data="menu_update_memory")],
         ]
     else:
         text = (
@@ -500,12 +804,17 @@ def build_start_menu(user_id: int):
 # ---------------------------------------------------------------------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type in ("group", "supergroup"):
+        # Личное меню (выбор проекта, бриф, инструкции) не должно предлагаться в
+        # групповых/рабочих чатах — это персональные сценарии.
+        return
     user_id = update.effective_user.id
     if user_id in BRIEF_STATES:
         del BRIEF_STATES[user_id]
         save_bot_state()
     text, reply_markup = build_start_menu(user_id)
-    await send_clean_message(update, text, reply_markup=reply_markup)
+    await clear_ui_screen(update, context)
+    await send_ui_screen(update, context, text, reply_markup=reply_markup)
 
 
 # ---------------------------------------------------------------------------
@@ -521,11 +830,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # --- Проектный чат: сохранение контекста и ответ по @упоминанию ---
     chat_id = update.effective_chat.id
     thread_id = update.effective_message.message_thread_id
+    is_group = update.effective_chat.type in ("group", "supergroup")
     proj_slug, chat_entry = get_project_chat_entry(chat_id, thread_id)
     if proj_slug and chat_entry:
-        bot_username = context.bot.username  # например StudiosuccBot
-        mention = f"@{bot_username}"
-        is_mention = mention.lower() in user_text.lower()
+        is_mention, clean_text = _check_mention(update, context, user_text)
 
         # Сохраняем контекст только если это не бот и не команда
         sender = update.effective_user
@@ -537,14 +845,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not is_mention:
             return
 
+        if not clean_text:
+            await update.message.reply_text("Напишите вопрос после упоминания бота.")
+            return
+
         # Упоминание — отвечаем через Memory Engine
         projects = load_projects_registry()
         project_entry = projects.get(proj_slug, {})
-        clean_text = user_text.replace(mention, "").replace(mention.lower(), "").strip()
-        query = clean_text or "Что обсуждалось?"
+        query = clean_text
 
         cm = ContextManager(proj_slug, project_entry)
-        ctx = cm.prepare_context(query, sender_name=sender_name)
+        ctx = cm.prepare_memory_context(query)
         system_with_context = build_project_system_prompt(
             SYSTEM_PROMPT, project_entry.get("title", proj_slug), ctx
         )
@@ -566,61 +877,70 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 max_tokens=GPT_MAX_TOKENS,
             )
             reply = response.choices[0].message.content
-            cm.update_state(ctx["new_offset"])
-            append_to_chat_context(proj_slug, "Ассистент", reply)
-            await update.message.reply_text(reply)
         except Exception as e:
             log.error(f"[GPT PROJECT CHAT ERROR] {e}")
-            await update.message.reply_text(f"Ошибка при обращении к GPT: {e}")
-        return
-
-    # --- Бриф в процессе заполнения ---
-    if user_id in BRIEF_STATES:
-        state = BRIEF_STATES[user_id]
-        idx = state["question_index"]
-        q = BRIEF_QUESTIONS[idx]
-
-        if q["type"] != "text":
-            await update.message.reply_text("Пожалуйста, выберите вариант из кнопок выше.")
+            await update.message.reply_text("Не удалось получить ответ. Попробуйте ещё раз немного позже.")
             return
 
-        if idx == 0:
-            state["project_name"] = user_text.strip()
-            state["project_slug"] = project_slug(user_text.strip())
-            brief_path = os.path.join("client_projects", state["project_slug"], "brief.json")
-            if os.path.exists(brief_path):
-                del BRIEF_STATES[user_id]
-                await update.message.reply_text(
-                    "Бриф по этому проекту уже заполнен.\n\n"
-                    "Если у вас есть комментарий или вопрос — обратитесь в чат проекта.",
-                    reply_markup=InlineKeyboardMarkup(
-                        [[InlineKeyboardButton("← Главное меню", callback_data="back_to_main")]]
-                    )
-                )
+        # Сохраняем ДО отправки: сбой доставки в Telegram не должен стоить уже
+        # полученного (и оплаченного) ответа — запись переживёт и отказ отправки.
+        append_to_chat_context(proj_slug, "Ассистент", reply)
+        try:
+            await send_gpt_reply(update, reply)
+        except Exception as e:
+            log.error(f"[TELEGRAM SEND ERROR] {e}")
+            # GPT уже отработал — повторный платный запрос не запускаем.
+        return
+
+    # --- Групповой/супергрупповой чат, не привязанный к проекту: реагируем ТОЛЬКО
+    # по явному @упоминанию — иначе бот отвечал бы в любом рабочем чате всякий
+    # раз, когда у написавшего туда сотрудника активен режим "Задать вопрос".
+    # Приватные сценарии (бриф и т.п.) ниже относятся только к приватным чатам —
+    # групповое сообщение никогда не должно попадать в BRIEF_STATES.
+    if is_group:
+        is_mention, clean_text = _check_mention(update, context, user_text)
+        if not is_mention:
+            return
+        user_text = clean_text or user_text
+        log.info(f"[GROUP ROUTING] user_id={user_id} chat_id={chat_id} mentioned=True")
+    else:
+        # --- Бриф в процессе заполнения (только приватный чат) ---
+        if user_id in BRIEF_STATES:
+            state = BRIEF_STATES[user_id]
+            idx = state["question_index"]
+            q = BRIEF_QUESTIONS[idx]
+
+            if q["type"] != "text":
+                await update.message.reply_text("Пожалуйста, выберите вариант из кнопок выше.")
                 return
 
-        state["answers"].append(user_text.strip())
-        state["question_index"] += 1
-        save_bot_state()
+            if idx == 0:
+                state["project_name"] = user_text.strip()
+                state["project_slug"] = project_slug(user_text.strip())
+                brief_path = os.path.join("client_projects", state["project_slug"], "brief.json")
+                if os.path.exists(brief_path):
+                    del BRIEF_STATES[user_id]
+                    await update.message.reply_text(
+                        "Бриф по этому проекту уже заполнен.\n\n"
+                        "Если у вас есть комментарий или вопрос — обратитесь в чат проекта.",
+                        reply_markup=InlineKeyboardMarkup(
+                            [[InlineKeyboardButton("← Главное меню", callback_data="back_to_main")]]
+                        )
+                    )
+                    return
 
-        async def send_fn(text, markup=None):
-            await update.message.reply_text(text, reply_markup=markup)
+            state["answers"].append(user_text.strip())
+            state["question_index"] += 1
+            save_bot_state()
 
-        await advance_brief(user_id, send_fn, context)
-        return
+            async def send_fn(text, markup=None):
+                await update.message.reply_text(text, reply_markup=markup)
 
-    # --- Обычный режим ---
-    # В группах/супергруппах (рабочие чаты) бот молчит, если его явно не позвали
-    # через @упоминание — иначе он бы отвечал в любом рабочем чате всякий раз,
-    # когда у сотрудника, написавшего туда, активен режим "Задать вопрос".
-    chat_type = update.effective_chat.type
-    if chat_type in ("group", "supergroup"):
-        bot_username = context.bot.username
-        mention = f"@{bot_username}"
-        if mention.lower() not in user_text.lower():
+            await advance_brief(user_id, send_fn, context)
             return
-        user_text = user_text.replace(mention, "").replace(mention.lower(), "").strip() or user_text
 
+    # --- Обычный режим (общий код для группы-по-упоминанию и приватного чата
+    # вне брифа) ---
     project = get_active_project(user_id)
 
     if is_staff(update):
@@ -630,15 +950,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             staff_name = update.effective_user.username or update.effective_user.first_name or ""
 
             cm = ContextManager(proj_slug, project["registry_entry"])
-            ctx = cm.prepare_context(user_text, sender_name=staff_name)
+            ctx = cm.prepare_memory_context(user_text)
             staff_note = f"Сотрудник задаёт вопрос по клиентскому проекту «{project['title']}»."
             system_with_context = build_project_system_prompt(
                 SYSTEM_PROMPT + "\n\n" + staff_note, project["title"], ctx
             )
+            question_mode = project.get("question_mode") or "new"
+            history_messages = []
+            if question_mode == "continue":
+                pairs = load_dialog_history(project["folder"], user_id=user_id)[-MAX_CONTINUE_PAIRS:]
+                history_messages = build_continue_messages(pairs)
             log.info(
-                f"[ACTIVE PROJECT] user_id={user_id} slug={proj_slug} "
+                f"[ACTIVE PROJECT] user_id={user_id} slug={proj_slug} question_mode={question_mode} "
                 f"memory_file={cm.memory_file} chat_context_file={cm.chat_context_file} "
-                f"sections={ctx['sections_used']}"
+                f"sections={ctx['sections_used']} history_pairs={len(history_messages) // 2}"
             )
             if is_rate_limited(user_id):
                 await update.message.reply_text("Подождите немного перед следующим запросом.")
@@ -646,26 +971,54 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 response = client.chat.completions.create(
                     model="gpt-4o",
-                    messages=[
-                        {"role": "system", "content": system_with_context},
-                        {"role": "user", "content": user_text}
-                    ],
+                    messages=[{"role": "system", "content": system_with_context}]
+                    + history_messages
+                    + [{"role": "user", "content": user_text}],
                     max_tokens=GPT_MAX_TOKENS,
                 )
                 reply = response.choices[0].message.content
-                cm.update_state(ctx["new_offset"])
-                append_staff_dialog(proj_slug, project["folder"], staff_name, user_text, reply)
-                await update.message.reply_text(reply)
             except Exception as e:
                 log.error(f"[GPT ERROR] {e}")
-                await update.message.reply_text(f"Ошибка при обращении к GPT: {e}")
+                await update.message.reply_text("Не удалось получить ответ. Попробуйте ещё раз немного позже.")
+                return
+
+            # Сохраняем ДО отправки — сбой доставки в Telegram не должен стоить
+            # уже полученного (и оплаченного) ответа.
+            saved_ok = save_dialog_turn(
+                proj_slug, project["folder"], user_id, staff_name, user_text, reply,
+                update_id=update.update_id
+            )
+            try:
+                await send_gpt_reply(update, reply)
+            except Exception as e:
+                log.error(f"[TELEGRAM SEND ERROR] {e}")
+                # GPT уже отработал — повторный платный запрос не запускаем.
+                return
+            if not saved_ok:
+                await update.message.reply_text(
+                    "Не удалось сохранить эту запись в историю проекта. "
+                    "Ответ выше сохранён, ошибка записана в лог."
+                )
+            await update.message.reply_text(
+                "Что дальше?",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Продолжить диалог", callback_data=f"staff_cont:{proj_slug}")],
+                    [InlineKeyboardButton("Новый вопрос", callback_data=f"staff_new:{proj_slug}")],
+                    [InlineKeyboardButton("Показать историю", callback_data=f"staff_hist:{proj_slug}:0")],
+                    [InlineKeyboardButton("← К проекту", callback_data=f"select_project:{proj_slug}")],
+                ])
+            )
             return
 
         else:
+            if is_group:
+                return  # молчим в группе — там это сообщение бессмысленно и шумно
             await update.message.reply_text("Нажмите /start чтобы выбрать проект.")
             return
 
     else:
+        if is_group:
+            return  # клиентские сценарии (обычный GPT-ответ) не всплывают в группах
         context_note = (
             "Пишет заказчик. Отвечай только в рамках клиентского сервиса. "
             "Не раскрывай внутренние процессы агентства, имена сотрудников и рабочие инструменты."
@@ -683,10 +1036,85 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ],
                 max_tokens=GPT_MAX_TOKENS,
             )
-            await update.message.reply_text(response.choices[0].message.content)
+            reply = response.choices[0].message.content
         except Exception as e:
             log.error(f"[GPT ERROR] {e}")
-            await update.message.reply_text(f"Ошибка при обращении к GPT: {e}")
+            await update.message.reply_text("Не удалось получить ответ. Попробуйте ещё раз немного позже.")
+            return
+        try:
+            await send_gpt_reply(update, reply)
+        except Exception as e:
+            log.error(f"[TELEGRAM SEND ERROR] {e}")
+            # GPT уже отработал — повторный платный запрос не запускаем.
+
+# ---------------------------------------------------------------------------
+# Ручное обновление памяти (кнопка "Обновить память по проектам")
+# ---------------------------------------------------------------------------
+
+def format_memory_update_summary(summary: dict) -> str:
+    """
+    Превращает JSON-итог daily_memory_update.py (--json-summary) в текст для
+    Telegram. Никогда не показывает сырые исключения, ключи или технические
+    секреты — только счётчики.
+    """
+    status = summary.get("status")
+    if status == "already_running":
+        return "Обновление памяти уже выполняется. Дождитесь завершения."
+    if status == "fatal_error":
+        return "Не удалось запустить обновление памяти. Обратитесь к разработчику."
+    return (
+        "Обновление памяти завершено.\n\n"
+        f"Проектов обработано: {summary.get('processed', 0)}\n"
+        f"Пропущено без изменений: {summary.get('skipped', 0)}\n"
+        f"Добавлено записей: {summary.get('added', 0)}\n"
+        f"Обновлено записей: {summary.get('updated', 0)}\n"
+        f"Ошибок: {summary.get('errors', 0)}"
+    )
+
+
+async def run_memory_update_and_notify(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
+    """
+    Запускает scripts/daily_memory_update.py как отдельный процесс с
+    --json-summary — не блокирует обработку апдейтов бота — и присылает
+    итог в чат по завершении. Использует ту же логику и ту же файловую
+    блокировку, что и автоматический ночной запуск: второй одновременный
+    запуск сам сообщит "already_running".
+    """
+    script_path = os.path.join("scripts", "daily_memory_update.py")
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, script_path, "--json-summary",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+    except Exception as e:
+        log.error(f"[MEMORY UPDATE] Не удалось запустить процесс: {e}")
+        await context.bot.send_message(chat_id=chat_id, text="Не удалось запустить обновление памяти.")
+        return
+
+    summary = None
+    for line in stdout.decode("utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                summary = json.loads(line)
+            except Exception:
+                continue
+
+    if summary is None:
+        log.error(
+            f"[MEMORY UPDATE] Не удалось разобрать вывод скрипта. "
+            f"stderr={stderr.decode('utf-8', errors='replace')[:500]}"
+        )
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="Обновление памяти завершилось с ошибкой. Подробности — в логах сервера."
+        )
+        return
+
+    log.info(f"[MEMORY UPDATE] ручной запуск завершён: {summary}")
+    await context.bot.send_message(chat_id=chat_id, text=format_memory_update_summary(summary))
 
 # ---------------------------------------------------------------------------
 # Обработка кнопок
@@ -694,6 +1122,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    if update.effective_chat.type in ("group", "supergroup"):
+        # Inline-кнопки этого бота — личный/сотруднический интерфейс. Старые
+        # кнопки, ранее отправленные ботом в групповой чат (до перехода на
+        # @-упоминания), могут оставаться активными в истории чата сколь
+        # угодно долго — нажатие на них не должно запускать НИКАКУЮ логику
+        # (GPT, Memory Engine, изменение состояния), только погасить "часики"
+        # у пользователя. Дальше в этой функции user_id/data не читаются.
+        await query.answer()
+        return
     await query.answer()
     data = query.data
     user_id = update.effective_user.id
@@ -705,7 +1142,8 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             del BRIEF_STATES[user_id]
             save_bot_state()
         text, reply_markup = build_start_menu(user_id)
-        await query.edit_message_text(text, reply_markup=reply_markup)
+        await clear_ui_screen(update, context)
+        await send_ui_screen(update, context, text, reply_markup=reply_markup)
 
     # -----------------------------------------------------------------------
     # ЗАКАЗЧИК
@@ -720,11 +1158,14 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "current_multi_selection": []
         }
         save_bot_state()
-        await query.edit_message_text(
+        await clear_ui_screen(update, context)
+        await send_ui_screen(
+            update, context,
             "Начинаем заполнять бриф.\n\nОтвечайте на вопросы — это займёт несколько минут."
         )
         async def send_fn(text, markup=None):
-            await query.message.reply_text(text, reply_markup=markup)
+            # Не query.message.reply_text: то сообщение уже удалено clear_ui_screen выше.
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=text, reply_markup=markup)
         await advance_brief(user_id, send_fn, context)
 
     elif data.startswith("brief_opt:"):
@@ -732,7 +1173,39 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("Сессия истекла. Нажмите /start чтобы начать снова.")
             return
         state = BRIEF_STATES[user_id]
-        answer = data[len("brief_opt:"):]
+        payload = data[len("brief_opt:"):]
+        parts = payload.split(":", 1)
+
+        # Валиден только ответ на ТЕКУЩИЙ вопрос брифа с реально существующим
+        # вариантом — так отсекаются и старый формат callback_data
+        # (brief_opt:<текст>, до этого исправления), и повторное/устаревшее
+        # нажатие уже обработанной кнопки (question_index больше не совпадает
+        # с текущим состоянием).
+        current_idx = state["question_index"]
+        valid = False
+        if (len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit()
+                and int(parts[0]) == current_idx
+                and 0 <= current_idx < len(BRIEF_QUESTIONS)
+                and BRIEF_QUESTIONS[current_idx]["type"] == "single"):
+            opt_idx = int(parts[1])
+            options = BRIEF_QUESTIONS[current_idx]["options"]
+            if 0 <= opt_idx < len(options):
+                valid = True
+
+        if not valid:
+            if 0 <= current_idx < len(BRIEF_QUESTIONS) and BRIEF_QUESTIONS[current_idx]["type"] == "single":
+                q = BRIEF_QUESTIONS[current_idx]
+                text = f"Вопрос {current_idx + 1} из {len(BRIEF_QUESTIONS)}:\n\n{q['q']}"
+                keyboard = [
+                    [InlineKeyboardButton(opt, callback_data=f"brief_opt:{current_idx}:{opt_idx}")]
+                    for opt_idx, opt in enumerate(q["options"])
+                ]
+                await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+            else:
+                await query.edit_message_text("Эта кнопка устарела. Нажмите /start, чтобы продолжить.")
+            return
+
+        answer = BRIEF_QUESTIONS[current_idx]["options"][opt_idx]
         state["answers"].append(answer)
         state["question_index"] += 1
         save_bot_state()
@@ -790,7 +1263,9 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         projects = load_projects_registry()
         if not projects:
-            await query.edit_message_text(
+            await clear_ui_screen(update, context)
+            await send_ui_screen(
+                update, context,
                 "В реестре пока нет активных проектов.",
                 reply_markup=InlineKeyboardMarkup(
                     [[InlineKeyboardButton("← Назад", callback_data="back_to_main")]]
@@ -802,7 +1277,9 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for slug, p in projects.items()
         ]
         keyboard.append([InlineKeyboardButton("← Назад", callback_data="back_to_main")])
-        await query.edit_message_text(
+        await clear_ui_screen(update, context)
+        await send_ui_screen(
+            update, context,
             f"{build_staff_project_header(user_id)}Выберите проект:",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
@@ -815,7 +1292,9 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         projects = load_projects_registry()
         project_entry = projects.get(slug)
         if not project_entry:
-            await query.edit_message_text(
+            await clear_ui_screen(update, context)
+            await send_ui_screen(
+                update, context,
                 "Проект не найден в реестре.",
                 reply_markup=InlineKeyboardMarkup(
                     [[InlineKeyboardButton("← К проектам", callback_data="staff_select_project")]]
@@ -829,16 +1308,24 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "folder": project_entry.get("folder", ""),
             "memory_file": project_entry.get("memory_file", ""),
             "brief_file": project_entry.get("brief_file", ""),
-            "mode": None
+            "mode": None,
+            "question_mode": None,
         }
         save_bot_state()
+        folder = project_entry.get("folder", os.path.join("client_projects", slug))
+        recent = load_dialog_history(folder)[-3:]
+        preview = format_dialog_pairs(recent) if recent else "История по этому проекту пока пуста."
         keyboard = [
+            [InlineKeyboardButton("Задать новый вопрос", callback_data=f"staff_new:{slug}")],
+            [InlineKeyboardButton("Продолжить диалог", callback_data=f"staff_cont:{slug}")],
+            [InlineKeyboardButton("Показать историю", callback_data=f"staff_hist:{slug}:0")],
             [InlineKeyboardButton("Посмотреть бриф", callback_data=f"staff_brief:{slug}")],
-            [InlineKeyboardButton("Задать вопрос", callback_data=f"staff_ask:{slug}")],
             [InlineKeyboardButton("← К проектам", callback_data="staff_select_project")],
         ]
-        await query.edit_message_text(
-            f"{build_staff_project_header(user_id)}Что хотите сделать?",
+        await clear_ui_screen(update, context)
+        await send_ui_screen(
+            update, context,
+            f"{build_staff_project_header(user_id)}{preview}",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
@@ -847,12 +1334,21 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("Эта функция доступна только сотрудникам.")
             return
         slug = data[len("staff_brief:"):]
+        projects = load_projects_registry()
+        project_entry = projects.get(slug)
+        if not project_entry:
+            await _show_project_not_found(update, context)
+            return
         back_kb = InlineKeyboardMarkup(
             [[InlineKeyboardButton("← К проекту", callback_data=f"select_project:{slug}")]]
         )
-        project = get_active_project(user_id)
         brief_text = ""
-        brief_file = project["registry_entry"].get("brief_file", "") if project else ""
+        # Бриф читается СТРОГО из записи, найденной по slug из этой кнопки — не
+        # из ACTIVE_PROJECTS сотрудника, чтобы не показать бриф другого проекта,
+        # если сотрудник сейчас выбрал не тот проект, на который указывает кнопка.
+        brief_file = project_entry.get(
+            "brief_file", os.path.join(project_entry.get("folder", os.path.join("client_projects", slug)), "brief.md")
+        )
         if brief_file and os.path.exists(brief_file):
             try:
                 with open(brief_file, "r", encoding="utf-8") as f:
@@ -862,30 +1358,43 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not brief_text:
             brief_text = load_project_brief(slug)
         header = build_staff_project_header(user_id)
+        await clear_ui_screen(update, context)
         if not brief_text:
-            await query.edit_message_text(f"{header}Бриф по этому проекту пока не найден.", reply_markup=back_kb)
+            await send_ui_screen(update, context, f"{header}Бриф по этому проекту пока не найден.", reply_markup=back_kb)
             return
-        MAX = 3800
-        if len(brief_text) <= MAX - len(header):
-            await query.edit_message_text(header + brief_text, reply_markup=back_kb)
-        else:
-            chunks = [brief_text[i:i+MAX] for i in range(0, len(brief_text), MAX)]
-            await query.edit_message_text(f"{header}Бриф (часть 1 из {len(chunks)}):")
-            for i, chunk in enumerate(chunks):
-                kb = back_kb if i == len(chunks) - 1 else None
-                await query.message.reply_text(chunk, reply_markup=kb)
+        await send_ui_screen(update, context, header + brief_text, reply_markup=back_kb)
 
-    elif data.startswith("staff_ask:"):
+    elif data.startswith("staff_new:") or data.startswith("staff_cont:"):
         if user_id not in STAFF_USERS:
             await query.edit_message_text("Эта функция доступна только сотрудникам.")
             return
-        slug = data[len("staff_ask:"):]
+        is_continue = data.startswith("staff_cont:")
+        slug = data[len("staff_cont:"):] if is_continue else data[len("staff_new:"):]
+        projects = load_projects_registry()
+        project_entry = projects.get(slug)
+        if not project_entry:
+            await _show_project_not_found(update, context)
+            return
+        folder = project_entry.get("folder", os.path.join("client_projects", slug))
+
+        if is_continue and not load_dialog_history(folder, user_id=user_id):
+            await clear_ui_screen(update, context)
+            await send_ui_screen(
+                update, context,
+                f"{build_staff_project_header(user_id)}"
+                "У вас пока нет диалога, который можно продолжить. Задайте новый вопрос.",
+                reply_markup=InlineKeyboardMarkup(
+                    [[InlineKeyboardButton("Задать новый вопрос", callback_data=f"staff_new:{slug}")]]
+                )
+            )
+            return
+
+        question_mode = "continue" if is_continue else "new"
         project = ACTIVE_PROJECTS.get(user_id)
         if project and project.get("slug") == slug:
             ACTIVE_PROJECTS[user_id]["mode"] = "project_chat"
+            ACTIVE_PROJECTS[user_id]["question_mode"] = question_mode
         else:
-            projects = load_projects_registry()
-            project_entry = projects.get(slug, {})
             ACTIVE_PROJECTS[user_id] = {
                 "type": "client",
                 "name": project_entry.get("title", slug),
@@ -893,15 +1402,91 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "folder": project_entry.get("folder", ""),
                 "memory_file": project_entry.get("memory_file", ""),
                 "brief_file": project_entry.get("brief_file", ""),
-                "mode": "project_chat"
+                "mode": "project_chat",
+                "question_mode": question_mode,
             }
         save_bot_state()
-        await query.edit_message_text(
-            f"{build_staff_project_header(user_id)}Режим вопросов активен. Задайте вопрос по проекту.",
+        prompt_text = (
+            "Режим: продолжение диалога. Бот учтёт до 3 последних ваших сообщений по этому "
+            "проекту. Задайте вопрос."
+            if is_continue else
+            "Режим: новый вопрос. Задайте вопрос по проекту."
+        )
+        await clear_ui_screen(update, context)
+        await send_ui_screen(
+            update, context,
+            f"{build_staff_project_header(user_id)}{prompt_text}",
             reply_markup=InlineKeyboardMarkup(
                 [[InlineKeyboardButton("← К проекту", callback_data=f"select_project:{slug}")]]
             )
         )
+
+    elif data.startswith("staff_hist:"):
+        if user_id not in STAFF_USERS:
+            await query.edit_message_text("Эта функция доступна только сотрудникам.")
+            return
+        _, slug, offset_str = data.split(":", 2)
+        offset = int(offset_str) if offset_str.isdigit() else 0
+        projects = load_projects_registry()
+        project_entry = projects.get(slug)
+        if not project_entry:
+            await _show_project_not_found(update, context)
+            return
+        folder = project_entry.get("folder", os.path.join("client_projects", slug))
+        records = list(reversed(load_dialog_history(folder)))
+        total = len(records)
+        page = records[offset: offset + HISTORY_PAGE_SIZE]
+        header = build_staff_project_header(user_id)
+        if not records:
+            text = f"{header}История по этому проекту пока пуста."
+        else:
+            text = (
+                f"{header}История проекта (записи {offset + 1}-{offset + len(page)} из {total}):\n\n"
+                + format_dialog_pairs(page)
+            )
+        nav_row = []
+        if offset > 0:
+            nav_row.append(InlineKeyboardButton(
+                "← Новее", callback_data=f"staff_hist:{slug}:{max(0, offset - HISTORY_PAGE_SIZE)}"
+            ))
+        if offset + HISTORY_PAGE_SIZE < total:
+            nav_row.append(InlineKeyboardButton(
+                "Старее →", callback_data=f"staff_hist:{slug}:{offset + HISTORY_PAGE_SIZE}"
+            ))
+        keyboard = []
+        if nav_row:
+            keyboard.append(nav_row)
+        keyboard.append([InlineKeyboardButton("← К проекту", callback_data=f"select_project:{slug}")])
+        await clear_ui_screen(update, context)
+        await send_ui_screen(update, context, text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    # -----------------------------------------------------------------------
+    # ОБНОВЛЕНИЕ ПАМЯТИ
+    # -----------------------------------------------------------------------
+
+    elif data == "menu_update_memory":
+        if user_id not in STAFF_USERS:
+            await query.edit_message_text("Эта функция доступна только сотрудникам.")
+            return
+        await clear_ui_screen(update, context)
+        await send_ui_screen(
+            update, context,
+            "Обновить память всех активных проектов?",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Запустить обновление", callback_data="confirm_update_memory")],
+                [InlineKeyboardButton("Отмена", callback_data="back_to_main")],
+            ])
+        )
+
+    elif data == "confirm_update_memory":
+        if user_id not in STAFF_USERS:
+            await query.edit_message_text("Эта функция доступна только сотрудникам.")
+            return
+        await clear_ui_screen(update, context)
+        await send_ui_screen(update, context, "Обновление памяти запущено…")
+        # Итоговое сообщение с результатом отправляется отдельно и НЕ регистрируется как
+        # UI-экран — его нельзя удалять при последующей навигации (см. run_memory_update_and_notify).
+        asyncio.create_task(run_memory_update_and_notify(context, update.effective_chat.id))
 
     # -----------------------------------------------------------------------
     # ИНСТРУКЦИИ
@@ -915,13 +1500,15 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("Коммуникация",      callback_data="instruction:communication")],
             [InlineKeyboardButton("Работа в проекте",  callback_data="instruction:project_work")],
             [InlineKeyboardButton("Контент",           callback_data="instruction:content")],
+            [InlineKeyboardButton("Чаты Studiosuccess", callback_data="instruction:chats")],
             [InlineKeyboardButton("Отчеты",            callback_data="instruction:reports")],
+            [InlineKeyboardButton("Соавторства",       callback_data="instruction:coauthorship")],
+            [InlineKeyboardButton("База блогеров",     callback_data="instruction:ad_platforms")],
+            [InlineKeyboardButton("Доступы",           callback_data="instruction:access")],
             [InlineKeyboardButton("← Назад",           callback_data="back_to_main")],
         ]
-        await query.edit_message_text(
-            "Выберите инструкцию:",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+        await clear_ui_screen(update, context)
+        await send_ui_screen(update, context, "Выберите инструкцию:", reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif data.startswith("instruction:"):
         if user_id not in STAFF_USERS:
@@ -933,18 +1520,11 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("← Назад к инструкциям", callback_data="menu_instructions")],
             [InlineKeyboardButton("Главное меню",           callback_data="back_to_main")],
         ])
+        await clear_ui_screen(update, context)
         if not text:
-            await query.edit_message_text("Инструкция временно недоступна.", reply_markup=back_kb)
+            await send_ui_screen(update, context, "Инструкция временно недоступна.", reply_markup=back_kb)
             return
-        MAX = 3800
-        if len(text) <= MAX:
-            await query.edit_message_text(text, reply_markup=back_kb)
-        else:
-            chunks = [text[i:i + MAX] for i in range(0, len(text), MAX)]
-            await query.edit_message_text(chunks[0])
-            for i, chunk in enumerate(chunks[1:], 1):
-                kb = back_kb if i == len(chunks) - 1 else None
-                await query.message.reply_text(chunk, reply_markup=kb)
+        await send_ui_screen(update, context, text, reply_markup=back_kb)
 
     # -----------------------------------------------------------------------
     # РЕЕСТР ЧАТОВ
@@ -955,8 +1535,10 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("Эта функция доступна только сотрудникам.")
             return
         chats = load_chats()
+        await clear_ui_screen(update, context)
         if not chats:
-            await query.edit_message_text(
+            await send_ui_screen(
+                update, context,
                 "Рабочие чаты пока не зарегистрированы.",
                 reply_markup=InlineKeyboardMarkup(
                     [[InlineKeyboardButton("← Назад", callback_data="back_to_main")]]
@@ -968,10 +1550,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for slug, info in chats.items()
         ]
         keyboard.append([InlineKeyboardButton("← Назад", callback_data="back_to_main")])
-        await query.edit_message_text(
-            "Зарегистрированные чаты:",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+        await send_ui_screen(update, context, "Зарегистрированные чаты:", reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif data.startswith("chat_info:"):
         if user_id not in STAFF_USERS:
@@ -988,7 +1567,9 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("Отправить тест", callback_data=f"send_test_chat:{slug}")],
             [InlineKeyboardButton("← Назад", callback_data="menu_chats")],
         ]
-        await query.edit_message_text(
+        await clear_ui_screen(update, context)
+        await send_ui_screen(
+            update, context,
             f"Название:\n{info['title']}\n\nChat ID:\n{info['chat_id']}\n\nТип:\n{info['type']}\n\nThread ID:\n{thread_label}",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
@@ -1005,13 +1586,29 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context, slug,
             f"Тестовое сообщение от Studiosuccess Bot.\nНазначение: {entry.get('title', slug)}\nThread ID: {thread_label}"
         )
+        await clear_ui_screen(update, context)
         if ok:
-            await query.edit_message_text(f"Тестовое сообщение отправлено в: {entry.get('title', slug)}")
+            await send_ui_screen(update, context, f"Тестовое сообщение отправлено в: {entry.get('title', slug)}")
         else:
-            await query.edit_message_text(
+            await send_ui_screen(
+                update, context,
                 "Не удалось отправить сообщение. "
                 "Проверьте, что бот добавлен в чат и имеет право отправлять сообщения."
             )
+
+    else:
+        # Неизвестный/устаревший callback_data (например, кнопка с чата до
+        # обновления бота) — безопасный fallback: ничего не меняем и не вызываем,
+        # просто предлагаем открыть меню заново. Т.к. это else после
+        # исчерпывающей цепочки elif выше, действующие callback'и сюда не попадают.
+        await clear_ui_screen(update, context)
+        await send_ui_screen(
+            update, context,
+            "Эта кнопка устарела. Откройте меню заново.",
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("Главное меню", callback_data="back_to_main")]]
+            )
+        )
 
 # ---------------------------------------------------------------------------
 # Команды: реестр чатов

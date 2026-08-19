@@ -68,3 +68,16 @@ def test_isolation_clause_absent_without_project_title():
     prompt = build_project_system_prompt("BASE", "", {})
 
     assert "других клиентских проектах" not in prompt
+
+
+def test_memory_only_context_produces_no_brief_or_chat_history_markers():
+    # Форма ctx, которую реально возвращает ContextManager.prepare_memory_context —
+    # только memory_block/sections_used, без brief/chat_context/staff_dialog.
+    ctx = {"memory_block": "[SERVICES]\nБазовый пакет.\n", "sections_used": ["services"]}
+
+    prompt = build_project_system_prompt("BASE", "Acme", ctx)
+
+    assert "Базовый пакет" in prompt
+    assert "БРИФ ПРОЕКТА:" not in prompt
+    assert "ИСТОРИЯ ЧАТА" not in prompt
+    assert "НОВЫЕ СООБЩЕНИЯ" not in prompt

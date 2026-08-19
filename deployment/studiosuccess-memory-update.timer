@@ -1,9 +1,9 @@
 [Unit]
-Description=Daily Memory Update Timer — 00:00 Moscow Time
+Description=Daily Memory Update Timer — 09:00 Moscow Time
 Requires=studiosuccess-memory-update.service
 
 [Timer]
-OnCalendar=*-*-* 21:00:00 UTC
+OnCalendar=*-*-* 06:00:00 UTC
 Persistent=true
 
 [Install]
