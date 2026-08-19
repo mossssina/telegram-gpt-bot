@@ -50,7 +50,3 @@ temp/
 # =========================
 backups/
 
-# =========================
-# Client data (stays on server, never in git)
-# =========================
-client_projects/
