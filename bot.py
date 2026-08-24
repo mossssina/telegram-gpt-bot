@@ -739,6 +739,22 @@ async def clear_ui_screen(update, context):
     screens[key] = []
 
 
+def _prepare_instruction_markdown(text: str) -> str:
+    import re
+    # Убираем **жирный** и *курсив*, оставляя только содержимое — они ломают Telegram Markdown v1.
+    # Бэктики (`код`) не трогаем — они нужны для копирования по тапу.
+    parts = re.split(r'(`[^`]+`)', text)
+    result = []
+    for i, part in enumerate(parts):
+        if i % 2 == 1:
+            result.append(part)
+        else:
+            part = re.sub(r'\*\*(.+?)\*\*', r'\1', part, flags=re.DOTALL)
+            part = re.sub(r'\*(.+?)\*', r'\1', part, flags=re.DOTALL)
+            result.append(part)
+    return ''.join(result)
+
+
 async def send_ui_screen(update, context, text, reply_markup=None, parse_mode=None) -> list:
     """
     Отправляет экран новым сообщением (или несколькими, если text длиннее
@@ -1524,6 +1540,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not text:
             await send_ui_screen(update, context, "Инструкция временно недоступна.", reply_markup=back_kb)
             return
+        text = _prepare_instruction_markdown(text)
         await send_ui_screen(update, context, text, reply_markup=back_kb, parse_mode='Markdown')
 
     # -----------------------------------------------------------------------
