@@ -965,12 +965,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if is_staff(update):
         session = ACTIVE_PROJECTS.get(user_id, {})
+        back_btn = InlineKeyboardMarkup([[InlineKeyboardButton("← Главное меню", callback_data="back_to_main")]])
+
         if session.get("mode") == "staff_chat_compose":
-            del ACTIVE_PROJECTS[user_id]
-            save_bot_state()
             try:
                 await context.bot.send_message(chat_id=STAFF_CHAT_ID, text=user_text)
-                await update.message.reply_text("Сообщение отправлено в чат команды ✓")
+                await clear_ui_screen(update, context)
+                await send_ui_screen(
+                    update, context,
+                    "✓ Отправлено в чат команды\n\nВведите следующее сообщение:",
+                    reply_markup=back_btn,
+                )
             except Exception as e:
                 log.error(f"[STAFF CHAT SEND ERROR] {e}")
                 await update.message.reply_text("Не удалось отправить сообщение. Попробуйте ещё раз.")
@@ -979,11 +984,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if session.get("mode") == "staff_project_chat_compose":
             chat_slug = session.get("chat_slug", "")
             chat_title = session.get("chat_title", chat_slug)
-            del ACTIVE_PROJECTS[user_id]
-            save_bot_state()
             ok = await send_to_registered_chat(context, chat_slug, user_text)
             if ok:
-                await update.message.reply_text(f"Сообщение отправлено в чат «{chat_title}» ✓")
+                await clear_ui_screen(update, context)
+                await send_ui_screen(
+                    update, context,
+                    f"✓ Отправлено в «{chat_title}»\n\nВведите следующее сообщение:",
+                    reply_markup=back_btn,
+                )
             else:
                 await update.message.reply_text("Не удалось отправить сообщение. Попробуйте ещё раз.")
             return
@@ -1184,7 +1192,9 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "back_to_main":
         if user_id in BRIEF_STATES:
             del BRIEF_STATES[user_id]
-            save_bot_state()
+        if user_id in ACTIVE_PROJECTS and ACTIVE_PROJECTS[user_id].get("mode") in ("staff_chat_compose", "staff_project_chat_compose"):
+            del ACTIVE_PROJECTS[user_id]
+        save_bot_state()
         text, reply_markup = build_start_menu(user_id)
         await clear_ui_screen(update, context)
         await send_ui_screen(update, context, text, reply_markup=reply_markup)
@@ -1515,7 +1525,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             update, context,
             "Введите сообщение для отправки в чат команды:",
             reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton("Отмена", callback_data="back_to_main")]]
+                [[InlineKeyboardButton("← Главное меню", callback_data="back_to_main")]]
             )
         )
 
@@ -1531,7 +1541,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton(entry["title"], callback_data=f"staff_write_project_chat:{slug}")]
             for slug, entry in sorted(chats.items(), key=lambda x: x[1]["title"])
         ]
-        keyboard.append([InlineKeyboardButton("Отмена", callback_data="back_to_main")])
+        keyboard.append([InlineKeyboardButton("← Главное меню", callback_data="back_to_main")])
         await clear_ui_screen(update, context)
         await send_ui_screen(
             update, context,
@@ -1560,7 +1570,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             update, context,
             f"Введите сообщение для отправки в чат «{entry['title']}»:",
             reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton("Отмена", callback_data="back_to_main")]]
+                [[InlineKeyboardButton("← Главное меню", callback_data="back_to_main")]]
             )
         )
 
