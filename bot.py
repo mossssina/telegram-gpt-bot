@@ -963,7 +963,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     project = get_active_project(user_id)
 
     if is_staff(update):
-        if project and project.get("mode") == "staff_chat_compose":
+        if ACTIVE_PROJECTS.get(user_id, {}).get("mode") == "staff_chat_compose":
             del ACTIVE_PROJECTS[user_id]
             save_bot_state()
             try:
