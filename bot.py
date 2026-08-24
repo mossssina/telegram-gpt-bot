@@ -40,6 +40,7 @@ STAFF_USERS = [
     for user_id in os.getenv("STAFF_USERS", "").split(",")
     if user_id.strip()
 ]
+STAFF_CHAT_ID = -1004342081714
 
 
 ACTIVE_PROJECTS = {}
@@ -807,6 +808,8 @@ def build_start_menu(user_id: int):
             [InlineKeyboardButton("📚 Инструкции", callback_data="menu_instructions")],
             [InlineKeyboardButton("Обновить память по проектам", callback_data="menu_update_memory")],
         ]
+        if user_id == 5247434464:
+            keyboard.insert(1, [InlineKeyboardButton("✍️ Написать в чат команды", callback_data="staff_write_to_team")])
     else:
         text = (
             "Здравствуйте. Это бот Studiosuccess.\n\n"
@@ -960,6 +963,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     project = get_active_project(user_id)
 
     if is_staff(update):
+        if project and project.get("mode") == "staff_chat_compose":
+            del ACTIVE_PROJECTS[user_id]
+            save_bot_state()
+            try:
+                await context.bot.send_message(chat_id=STAFF_CHAT_ID, text=user_text)
+                await update.message.reply_text("Сообщение отправлено в чат команды ✓")
+            except Exception as e:
+                log.error(f"[STAFF CHAT SEND ERROR] {e}")
+                await update.message.reply_text("Не удалось отправить сообщение. Попробуйте ещё раз.")
+            return
+
         if project and project.get("mode") == "project_chat":
             # Режим вопросов по проекту — используем Memory Engine
             proj_slug = project["slug"]
@@ -1475,6 +1489,21 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard.append([InlineKeyboardButton("← К проекту", callback_data=f"select_project:{slug}")])
         await clear_ui_screen(update, context)
         await send_ui_screen(update, context, text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    elif data == "staff_write_to_team":
+        if user_id != 5247434464:
+            await query.edit_message_text("Недостаточно прав.")
+            return
+        ACTIVE_PROJECTS[user_id] = {"mode": "staff_chat_compose"}
+        save_bot_state()
+        await clear_ui_screen(update, context)
+        await send_ui_screen(
+            update, context,
+            "Введите сообщение для отправки в чат команды:",
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("Отмена", callback_data="back_to_main")]]
+            )
+        )
 
     # -----------------------------------------------------------------------
     # ОБНОВЛЕНИЕ ПАМЯТИ
