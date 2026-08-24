@@ -810,6 +810,7 @@ def build_start_menu(user_id: int):
         ]
         if user_id == 5247434464:
             keyboard.insert(1, [InlineKeyboardButton("✍️ Написать в чат команды", callback_data="staff_write_to_team")])
+            keyboard.insert(2, [InlineKeyboardButton("✍️ Написать в чат проекта", callback_data="staff_write_to_project")])
     else:
         text = (
             "Здравствуйте. Это бот Studiosuccess.\n\n"
@@ -963,7 +964,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     project = get_active_project(user_id)
 
     if is_staff(update):
-        if ACTIVE_PROJECTS.get(user_id, {}).get("mode") == "staff_chat_compose":
+        session = ACTIVE_PROJECTS.get(user_id, {})
+        if session.get("mode") == "staff_chat_compose":
             del ACTIVE_PROJECTS[user_id]
             save_bot_state()
             try:
@@ -971,6 +973,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("Сообщение отправлено в чат команды ✓")
             except Exception as e:
                 log.error(f"[STAFF CHAT SEND ERROR] {e}")
+                await update.message.reply_text("Не удалось отправить сообщение. Попробуйте ещё раз.")
+            return
+
+        if session.get("mode") == "staff_project_chat_compose":
+            chat_slug = session.get("chat_slug", "")
+            chat_title = session.get("chat_title", chat_slug)
+            del ACTIVE_PROJECTS[user_id]
+            save_bot_state()
+            ok = await send_to_registered_chat(context, chat_slug, user_text)
+            if ok:
+                await update.message.reply_text(f"Сообщение отправлено в чат «{chat_title}» ✓")
+            else:
                 await update.message.reply_text("Не удалось отправить сообщение. Попробуйте ещё раз.")
             return
 
@@ -1500,6 +1514,51 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_ui_screen(
             update, context,
             "Введите сообщение для отправки в чат команды:",
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("Отмена", callback_data="back_to_main")]]
+            )
+        )
+
+    elif data == "staff_write_to_project":
+        if user_id != 5247434464:
+            await query.edit_message_text("Недостаточно прав.")
+            return
+        chats = load_chats()
+        if not chats:
+            await query.edit_message_text("Нет зарегистрированных чатов проектов.")
+            return
+        keyboard = [
+            [InlineKeyboardButton(entry["title"], callback_data=f"staff_write_project_chat:{slug}")]
+            for slug, entry in sorted(chats.items(), key=lambda x: x[1]["title"])
+        ]
+        keyboard.append([InlineKeyboardButton("Отмена", callback_data="back_to_main")])
+        await clear_ui_screen(update, context)
+        await send_ui_screen(
+            update, context,
+            "Выберите чат проекта:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    elif data.startswith("staff_write_project_chat:"):
+        if user_id != 5247434464:
+            await query.edit_message_text("Недостаточно прав.")
+            return
+        slug = data[len("staff_write_project_chat:"):]
+        chats = load_chats()
+        entry = chats.get(slug)
+        if not entry:
+            await query.edit_message_text("Чат не найден.")
+            return
+        ACTIVE_PROJECTS[user_id] = {
+            "mode": "staff_project_chat_compose",
+            "chat_slug": slug,
+            "chat_title": entry["title"],
+        }
+        save_bot_state()
+        await clear_ui_screen(update, context)
+        await send_ui_screen(
+            update, context,
+            f"Введите сообщение для отправки в чат «{entry['title']}»:",
             reply_markup=InlineKeyboardMarkup(
                 [[InlineKeyboardButton("Отмена", callback_data="back_to_main")]]
             )
