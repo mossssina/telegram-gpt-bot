@@ -739,7 +739,7 @@ async def clear_ui_screen(update, context):
     screens[key] = []
 
 
-async def send_ui_screen(update, context, text, reply_markup=None) -> list:
+async def send_ui_screen(update, context, text, reply_markup=None, parse_mode=None) -> list:
     """
     Отправляет экран новым сообщением (или несколькими, если text длиннее
     лимита Telegram) и регистрирует все message_id как принадлежащие текущему
@@ -749,14 +749,14 @@ async def send_ui_screen(update, context, text, reply_markup=None) -> list:
     chat_id = update.effective_chat.id
     MAX = 3800
     if len(text) <= MAX:
-        msg = await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
+        msg = await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup, parse_mode=parse_mode)
         sent = [msg]
     else:
         chunks = [text[i:i + MAX] for i in range(0, len(text), MAX)]
         sent = []
         for i, chunk in enumerate(chunks):
             kb = reply_markup if i == len(chunks) - 1 else None
-            msg = await context.bot.send_message(chat_id=chat_id, text=chunk, reply_markup=kb)
+            msg = await context.bot.send_message(chat_id=chat_id, text=chunk, reply_markup=kb, parse_mode=parse_mode)
             sent.append(msg)
     register_ui_messages(update, context, sent, replace=True)
     return sent
@@ -1524,7 +1524,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not text:
             await send_ui_screen(update, context, "Инструкция временно недоступна.", reply_markup=back_kb)
             return
-        await send_ui_screen(update, context, text, reply_markup=back_kb)
+        await send_ui_screen(update, context, text, reply_markup=back_kb, parse_mode='Markdown')
 
     # -----------------------------------------------------------------------
     # РЕЕСТР ЧАТОВ
