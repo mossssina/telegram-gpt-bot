@@ -816,7 +816,10 @@ def build_start_menu(user_id: int):
             "Здравствуйте. Это бот Studiosuccess.\n\n"
             "Вы можете заполнить бриф, чтобы мы взяли задачу в работу."
         )
-        keyboard = [[InlineKeyboardButton("Заполнить бриф", callback_data="client_fill_brief")]]
+        keyboard = [
+            [InlineKeyboardButton("Заполнить бриф", callback_data="client_fill_brief")],
+            [InlineKeyboardButton("Опубликовать проект в журнале", url="https://telegra.ph/Mediabaza-dizajn-izdanij-2024--Studio-Success-08-24")],
+        ]
     return text, InlineKeyboardMarkup(keyboard)
 
 # ---------------------------------------------------------------------------
