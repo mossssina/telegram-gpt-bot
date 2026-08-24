@@ -10,11 +10,9 @@ PROJECT_DIR="/Users/anastasiiamosina/claude/telegram-gpt-bot"
 
 REMOTE="studiosuccess-server"
 
-REMOTE_DIR="/home/yc-user/telegram-gpt-bot"
+REMOTE_DIR="/home/telegram-gpt-bot"
 
 SERVICE="studiosuccess-bot.service"
-
-MEMORY_SERVICE="studiosuccess-memory-update.service"
 
 MEMORY_TIMER="studiosuccess-memory-update.timer"
 
@@ -74,35 +72,26 @@ echo "OK"
 fi
 
 ###########################################
-# GIT STATUS
+# GIT PUSH
 ###########################################
 
 echo ""
 
-echo -e "${GREEN}2. Проверка Git${NC}"
+echo -e "${GREEN}2. Push на GitHub${NC}"
 
-git status --short || true
+git push
+
+echo "OK"
 
 ###########################################
-# RSYNC
+# GIT PULL ON SERVER
 ###########################################
 
 echo ""
 
-echo -e "${GREEN}3. Копирование файлов${NC}"
+echo -e "${GREEN}3. Pull на сервере${NC}"
 
-rsync -az \
---exclude=".git" \
---exclude=".venv" \
---exclude="venv" \
---exclude="__pycache__" \
---exclude=".DS_Store" \
---exclude="*.pyc" \
---exclude="logs/" \
---exclude="client_projects/" \
---exclude=".env" \
-./ \
-${REMOTE}:${REMOTE_DIR}/
+ssh ${REMOTE} "cd ${REMOTE_DIR} && git pull"
 
 echo "OK"
 
@@ -116,12 +105,9 @@ echo -e "${GREEN}4. Проверка зависимостей${NC}"
 
 if git diff --name-only HEAD~1 HEAD 2>/dev/null | grep -q "requirements.txt"; then
 
-echo "requirements.txt изменился"
+echo "requirements.txt изменился — устанавливаю"
 
-ssh ${REMOTE} "
-cd ${REMOTE_DIR}
-.venv/bin/pip install -r requirements.txt
-"
+ssh ${REMOTE} "cd ${REMOTE_DIR} && .venv/bin/pip install -r requirements.txt"
 
 else
 
@@ -130,60 +116,14 @@ echo "requirements.txt не изменился"
 fi
 
 ###########################################
-# SYSTEMD
-###########################################
-
-echo ""
-
-echo -e "${GREEN}5. Обновление systemd${NC}"
-
-ssh ${REMOTE} "
-
-cd ${REMOTE_DIR}
-
-if [ -f deployment/studiosuccess-bot.service ]; then
-
-sudo cp deployment/studiosuccess-bot.service /etc/systemd/system/
-
-fi
-
-if [ -f deployment/studiosuccess-memory-update.service ]; then
-
-sudo cp deployment/studiosuccess-memory-update.service /etc/systemd/system/
-
-fi
-
-if [ -f deployment/studiosuccess-memory-update.timer ]; then
-
-sudo cp deployment/studiosuccess-memory-update.timer /etc/systemd/system/
-
-fi
-
-sudo systemctl daemon-reload
-
-"
-
-echo "OK"
-
-###########################################
 # RESTART
 ###########################################
 
 echo ""
 
-echo -e "${GREEN}6. Перезапуск сервисов${NC}"
+echo -e "${GREEN}5. Перезапуск сервиса${NC}"
 
-ssh ${REMOTE} "
-
-sudo systemctl restart ${SERVICE}
-
-if systemctl list-unit-files | grep -q ${MEMORY_TIMER}; then
-
-sudo systemctl restart ${MEMORY_TIMER}
-
-fi
-
-"
+ssh ${REMOTE} "systemctl restart ${SERVICE}"
 
 echo "OK"
 
@@ -193,41 +133,9 @@ echo "OK"
 
 echo ""
 
-echo -e "${GREEN}7. Проверка статуса${NC}"
+echo -e "${GREEN}6. Проверка статуса${NC}"
 
-ssh ${REMOTE} "
-
-sudo systemctl --no-pager --full status ${SERVICE}
-
-echo
-
-if systemctl list-unit-files | grep -q ${MEMORY_TIMER}; then
-
-sudo systemctl --no-pager --full status ${MEMORY_TIMER}
-
-fi
-
-"
-
-###########################################
-# MEMORY TEST
-###########################################
-
-echo ""
-
-echo -e "${GREEN}8. Проверка Memory Engine${NC}"
-
-ssh ${REMOTE} "
-
-cd ${REMOTE_DIR}
-
-if [ -f scripts/daily_memory_update.py ]; then
-
-.venv/bin/python scripts/daily_memory_update.py --dry-run || true
-
-fi
-
-"
+ssh ${REMOTE} "systemctl --no-pager --full status ${SERVICE}"
 
 ###########################################
 # LOGS
@@ -235,13 +143,9 @@ fi
 
 echo ""
 
-echo -e "${GREEN}9. Последние логи${NC}"
+echo -e "${GREEN}7. Последние логи${NC}"
 
-ssh ${REMOTE} "
-
-sudo journalctl -u ${SERVICE} -n 30 --no-pager
-
-"
+ssh ${REMOTE} "journalctl -u ${SERVICE} -n 30 --no-pager"
 
 ###########################################
 # FINISH
@@ -254,13 +158,5 @@ echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}DEPLOY SUCCESSFUL${NC}"
 
 echo -e "${GREEN}========================================${NC}"
-
-echo ""
-
-echo "Бот успешно обновлен."
-
-echo "Memory Engine проверен."
-
-echo "Сервисы работают."
 
 echo ""
