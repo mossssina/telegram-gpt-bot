@@ -818,6 +818,7 @@ def build_start_menu(user_id: int):
         )
         keyboard = [
             [InlineKeyboardButton("Заполнить бриф", callback_data="client_fill_brief")],
+            [InlineKeyboardButton("Услуги", callback_data="client_services")],
             [InlineKeyboardButton("Опубликовать проект в журнале", url="https://telegra.ph/Mediabaza-dizajn-izdanij-2024--Studio-Success-08-24")],
         ]
     return text, InlineKeyboardMarkup(keyboard)
@@ -1205,6 +1206,23 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # -----------------------------------------------------------------------
     # ЗАКАЗЧИК
     # -----------------------------------------------------------------------
+
+    elif data == "client_services":
+        prices_file = os.path.join("config", "prices_bot.md")
+        try:
+            with open(prices_file, "r", encoding="utf-8") as f:
+                text = _prepare_instruction_markdown(f.read())
+        except Exception:
+            text = "Информация об услугах временно недоступна."
+        await clear_ui_screen(update, context)
+        await send_ui_screen(
+            update, context,
+            text,
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("← Назад", callback_data="back_to_main")]]
+            ),
+            parse_mode="Markdown",
+        )
 
     elif data == "client_fill_brief":
         BRIEF_STATES[user_id] = {
