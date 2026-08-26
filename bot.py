@@ -45,6 +45,7 @@ STAFF_CHAT_ID = -1004342081714
 
 ACTIVE_PROJECTS = {}
 BRIEF_STATES = {}
+APPROVED_CLIENTS: set = set()  # кэш user_id клиентов, прошедших проверку членства
 
 # ---------------------------------------------------------------------------
 # Персистентное состояние бота (переживает перезапуск)
@@ -97,6 +98,24 @@ def save_chats(data: dict):
     os.makedirs("config", exist_ok=True)
     with open(CHATS_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
+async def is_registered_client(user_id: int, bot) -> bool:
+    """Возвращает True если user_id — участник хотя бы одного зарегистрированного чата."""
+    if user_id in APPROVED_CLIENTS:
+        return True
+    chats = load_chats()
+    for entry in chats.values():
+        chat_id = entry.get("chat_id")
+        if not chat_id:
+            continue
+        try:
+            member = await bot.get_chat_member(chat_id=int(chat_id), user_id=user_id)
+            if member.status in ("creator", "administrator", "member", "restricted"):
+                APPROVED_CLIENTS.add(user_id)
+                return True
+        except Exception:
+            continue
+    return False
 
 async def send_to_registered_chat(context, chat_slug: str, text: str) -> bool:
     chats = load_chats()
@@ -858,6 +877,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # групповых/рабочих чатах — это персональные сценарии.
         return
     user_id = update.effective_user.id
+    if user_id not in STAFF_USERS:
+        if not await is_registered_client(user_id, context.bot):
+            await context.bot.send_message(
+                chat_id=user_id,
+                text="К сожалению, доступ к боту ограничен.\n\nЕсли вы клиент Studiosuccess — обратитесь к своему менеджеру."
+            )
+            return
     if user_id in BRIEF_STATES:
         await _delete_brief_messages(user_id, context.bot)
         del BRIEF_STATES[user_id]
