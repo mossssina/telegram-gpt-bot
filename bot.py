@@ -802,7 +802,16 @@ async def _show_project_not_found(update, context):
 def build_start_menu(user_id: int):
     if user_id in STAFF_USERS:
         header = build_staff_project_header(user_id)
-        text = f"{header}Вы вошли как сотрудник Studiosuccess.\n\nВыберите проект."
+        text = (
+            f"{header}"
+            "🤖💜 Привет! Это ассистент *Studiosuccess*\n\n"
+            "Что я умею для команды:\n"
+            "— выбрать проект и задать вопрос по нему\n"
+            "— найти нужное в брифе клиента\n"
+            "— открыть инструкции\n"
+            "— написать в чат команды или в чат проекта\n\n"
+            "Клиентам доступны: бриф, услуги и база знаний ✦"
+        )
         keyboard = [
             [InlineKeyboardButton("Выбрать проект", callback_data="staff_select_project")],
             [InlineKeyboardButton("📚 Инструкции", callback_data="menu_instructions")],
@@ -813,8 +822,8 @@ def build_start_menu(user_id: int):
             keyboard.insert(2, [InlineKeyboardButton("✍️ Написать в чат проекта", callback_data="staff_write_to_project")])
     else:
         text = (
-            "Здравствуйте. Это бот Studiosuccess.\n\n"
-            "Вы можете заполнить бриф, чтобы мы взяли задачу в работу."
+            "𓆩♡𓆪 Привет! Это ассистент *Studiosuccess*\n\n"
+            "Здесь можно заполнить бриф, узнать об услугах и заглянуть в базу знаний — всё в одном месте 🪄"
         )
         keyboard = [
             [InlineKeyboardButton("Заполнить бриф", callback_data="client_fill_brief")],
@@ -838,7 +847,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_bot_state()
     text, reply_markup = build_start_menu(user_id)
     await clear_ui_screen(update, context)
-    await send_ui_screen(update, context, text, reply_markup=reply_markup)
+    await send_ui_screen(update, context, text, reply_markup=reply_markup, parse_mode="Markdown")
 
 
 # ---------------------------------------------------------------------------
@@ -1201,7 +1210,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_bot_state()
         text, reply_markup = build_start_menu(user_id)
         await clear_ui_screen(update, context)
-        await send_ui_screen(update, context, text, reply_markup=reply_markup)
+        await send_ui_screen(update, context, text, reply_markup=reply_markup, parse_mode="Markdown")
 
     # -----------------------------------------------------------------------
     # ЗАКАЗЧИК
