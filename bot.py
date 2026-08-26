@@ -1637,25 +1637,24 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("Эта функция доступна только сотрудникам.")
             return
         keyboard = [
-            [InlineKeyboardButton("Коммуникация",      callback_data="instruction:communication")],
-            [InlineKeyboardButton("Работа в проекте",  callback_data="instruction:project_work")],
-            [InlineKeyboardButton("Контент",           callback_data="instruction:content")],
-            [InlineKeyboardButton("Чаты Studiosuccess", callback_data="instruction:chats")],
-            [InlineKeyboardButton("Отчеты",            callback_data="instruction:reports")],
-            [InlineKeyboardButton("Соавторства",       callback_data="instruction:coauthorship")],
-            [InlineKeyboardButton("База блогеров",     callback_data="instruction:ad_platforms")],
-            [InlineKeyboardButton("Доступы",           callback_data="instruction:access")],
-            [InlineKeyboardButton("← Назад",           callback_data="back_to_main")],
+            [InlineKeyboardButton("Коммуникация",       url="https://telegra.ph/Kommunikaciya--Studiosuccess-08-26")],
+            [InlineKeyboardButton("Работа в проекте",   url="https://telegra.ph/Rabota-v-proekte--Studiosuccess-08-26")],
+            [InlineKeyboardButton("Контент",            url="https://telegra.ph/Kontent--Studiosuccess-08-26")],
+            [InlineKeyboardButton("Чаты Studiosuccess", url="https://telegra.ph/CHaty-Studiosuccess-08-26")],
+            [InlineKeyboardButton("Отчеты",             url="https://telegra.ph/Otchety--Studiosuccess-08-26")],
+            [InlineKeyboardButton("Соавторства",        url="https://telegra.ph/Soavtorstva--Studiosuccess-08-26")],
+            [InlineKeyboardButton("База блогеров",      url="https://telegra.ph/Baza-reklamnyh-ploshchadok--Studiosuccess-08-26")],
+            [InlineKeyboardButton("Доступы",            callback_data="instruction:access")],
+            [InlineKeyboardButton("← Назад",            callback_data="back_to_main")],
         ]
         await clear_ui_screen(update, context)
         await send_ui_screen(update, context, "Выберите инструкцию:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-    elif data.startswith("instruction:"):
+    elif data == "instruction:access":
         if user_id not in STAFF_USERS:
             await query.edit_message_text("Эта функция доступна только сотрудникам.")
             return
-        name = data[len("instruction:"):]
-        text = load_instruction(name)
+        text = load_instruction("access")
         back_kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("← Назад к инструкциям", callback_data="menu_instructions")],
             [InlineKeyboardButton("Главное меню",           callback_data="back_to_main")],
