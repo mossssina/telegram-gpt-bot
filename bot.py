@@ -1224,6 +1224,9 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("Опубликовать проект в журнале", url="https://telegra.ph/Mediabaza-dizajn-izdanij-2024--Studio-Success-08-24")],
                 [InlineKeyboardButton("База фотографов интерьера и архитектуры", url="https://telegra.ph/Baza-fotografov-interera-i-arhitektury-2024-08-26")],
+                [InlineKeyboardButton("База конкурсов", url="https://telegra.ph/Baza-konkursov-dlya-dizajnerov-i-arhitektorov-2026-08-26")],
+                [InlineKeyboardButton("База выставок и ярмарок", url="https://telegra.ph/Baza-vystavok-i-yarmarok-dizajna-2026-08-26")],
+                [InlineKeyboardButton("База площадок для портфолио", url="https://telegra.ph/Baza-ploshchadok-dlya-portfolio-dizajnera-2026-08-26")],
                 [InlineKeyboardButton("← Назад", callback_data="back_to_main")],
             ]),
             parse_mode="Markdown",
