@@ -860,6 +860,7 @@ def build_start_menu(user_id: int):
             [InlineKeyboardButton("Выбрать проект", callback_data="staff_select_project")],
             [InlineKeyboardButton("📚 Инструкции", callback_data="menu_instructions")],
             [InlineKeyboardButton("Обновить память по проектам", callback_data="menu_update_memory")],
+            [InlineKeyboardButton("👁 Доступно для клиентов", callback_data="staff_view_client_menu")],
         ]
         if user_id == 5247434464:
             keyboard.insert(1, [InlineKeyboardButton("✍️ Написать в чат команды", callback_data="staff_write_to_team")])
@@ -1447,6 +1448,22 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         async def send_fn_back(text, markup=None):
             return await context.bot.send_message(chat_id=update.effective_chat.id, text=text, reply_markup=markup)
         await advance_brief(user_id, send_fn_back, context)
+
+    elif data == "staff_view_client_menu":
+        if user_id not in STAFF_USERS:
+            return
+        await clear_ui_screen(update, context)
+        await send_ui_screen(
+            update, context,
+            "𓆩♡𓆪 Это ассистент *Studiosuccess*\n\nЗдесь можно заполнить бриф, узнать об услугах и заглянуть в базу знаний — всё в одном месте 🪄",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Заполнить бриф", callback_data="client_fill_brief")],
+                [InlineKeyboardButton("Услуги", url="https://telegra.ph/Uslugi-Studiosuccess--SMM-dlya-dizajnerov-interera-08-26")],
+                [InlineKeyboardButton("База знаний", callback_data="client_knowledge_base")],
+                [InlineKeyboardButton("← Назад", callback_data="back_to_main")],
+            ]),
+            parse_mode="Markdown",
+        )
 
     # -----------------------------------------------------------------------
     # СОТРУДНИК
