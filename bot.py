@@ -670,11 +670,16 @@ async def advance_brief(user_id: int, send_fn, context=None):
         )
         return
 
+    total = len(BRIEF_QUESTIONS)
+    filled = round(idx * 10 / total)
+    bar = "▓" * filled + "░" * (10 - filled)
     q = BRIEF_QUESTIONS[idx]
-    text = f"Вопрос {idx + 1} из {len(BRIEF_QUESTIONS)}:\n\n{q['q']}"
+    text = f"{bar} {idx + 1}/{total}\n\n{q['q']}"
+    back_row = [InlineKeyboardButton("← Назад", callback_data="brief_back")]
 
     if q["type"] == "text":
-        msg = await send_fn(text)
+        markup = InlineKeyboardMarkup([back_row]) if idx > 0 else None
+        msg = await send_fn(text, markup)
     elif q["type"] == "single":
         # question_index зашит в callback_data, чтобы обработчик мог отличить
         # ответ на ТЕКУЩИЙ вопрос от повторного/устаревшего нажатия старой кнопки.
@@ -682,11 +687,15 @@ async def advance_brief(user_id: int, send_fn, context=None):
             [InlineKeyboardButton(opt, callback_data=f"brief_opt:{idx}:{opt_idx}")]
             for opt_idx, opt in enumerate(q["options"])
         ]
+        if idx > 0:
+            keyboard.append(back_row)
         msg = await send_fn(text, InlineKeyboardMarkup(keyboard))
     elif q["type"] == "multi":
         state["current_multi_selection"] = []
         keyboard = [[InlineKeyboardButton(opt, callback_data=f"brief_tog:{opt}")] for opt in q["options"]]
         keyboard.append([InlineKeyboardButton("Готово →", callback_data="brief_done")])
+        if idx > 0:
+            keyboard.append(back_row)
         msg = await send_fn(text, InlineKeyboardMarkup(keyboard))
     else:
         msg = None
@@ -983,6 +992,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # --- Бриф в процессе заполнения (только приватный чат) ---
         if user_id in BRIEF_STATES:
             state = BRIEF_STATES[user_id]
+
+            # Ожидаем уточнение после выбора "Свой вариант"
+            if state.get("awaiting_custom_for_idx") is not None:
+                state["answers"].append(user_text.strip())
+                state["awaiting_custom_for_idx"] = None
+                state["question_index"] += 1
+                save_bot_state()
+                async def send_fn_custom(text, markup=None):
+                    return await update.message.reply_text(text, reply_markup=markup)
+                await advance_brief(user_id, send_fn_custom, context)
+                return
+
             idx = state["question_index"]
             q = BRIEF_QUESTIONS[idx]
 
@@ -1287,6 +1308,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "answers": [],
             "current_multi_selection": [],
             "question_message_ids": [],
+            "awaiting_custom_for_idx": None,
         }
         save_bot_state()
         await clear_ui_screen(update, context)
@@ -1323,20 +1345,38 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if 0 <= opt_idx < len(options):
                 valid = True
 
+        total = len(BRIEF_QUESTIONS)
+
         if not valid:
             if 0 <= current_idx < len(BRIEF_QUESTIONS) and BRIEF_QUESTIONS[current_idx]["type"] == "single":
                 q = BRIEF_QUESTIONS[current_idx]
-                text = f"Вопрос {current_idx + 1} из {len(BRIEF_QUESTIONS)}:\n\n{q['q']}"
+                filled = round(current_idx * 10 / total)
+                bar = "▓" * filled + "░" * (10 - filled)
+                text = f"{bar} {current_idx + 1}/{total}\n\n{q['q']}"
                 keyboard = [
                     [InlineKeyboardButton(opt, callback_data=f"brief_opt:{current_idx}:{opt_idx}")]
                     for opt_idx, opt in enumerate(q["options"])
                 ]
+                if current_idx > 0:
+                    keyboard.append([InlineKeyboardButton("← Назад", callback_data="brief_back")])
                 await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
             else:
                 await query.edit_message_text("Эта кнопка устарела. Нажмите /start, чтобы продолжить.")
             return
 
         answer = BRIEF_QUESTIONS[current_idx]["options"][opt_idx]
+
+        if answer == "Свой вариант":
+            state["awaiting_custom_for_idx"] = current_idx
+            save_bot_state()
+            await query.edit_message_text("✓ Свой вариант")
+            msg = await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="Пожалуйста, уточните:"
+            )
+            state.setdefault("question_message_ids", []).append(msg.message_id)
+            return
+
         state["answers"].append(answer)
         state["question_index"] += 1
         save_bot_state()
@@ -1363,6 +1403,8 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             label = f"✓ {opt}" if opt in selected else opt
             keyboard.append([InlineKeyboardButton(label, callback_data=f"brief_tog:{opt}")])
         keyboard.append([InlineKeyboardButton("Готово →", callback_data="brief_done")])
+        if idx > 0:
+            keyboard.append([InlineKeyboardButton("← Назад", callback_data="brief_back")])
         await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif data == "brief_done":
@@ -1383,6 +1425,28 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         async def send_fn(text, markup=None):
             return await query.message.reply_text(text, reply_markup=markup)
         await advance_brief(user_id, send_fn, context)
+
+    elif data == "brief_back":
+        if user_id not in BRIEF_STATES:
+            await query.answer()
+            return
+        state = BRIEF_STATES[user_id]
+        if state["question_index"] == 0:
+            await query.answer("Это первый вопрос.")
+            return
+        state["question_index"] -= 1
+        if state["answers"]:
+            state["answers"].pop()
+        state["current_multi_selection"] = []
+        state["awaiting_custom_for_idx"] = None
+        save_bot_state()
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+        async def send_fn_back(text, markup=None):
+            return await context.bot.send_message(chat_id=update.effective_chat.id, text=text, reply_markup=markup)
+        await advance_brief(user_id, send_fn_back, context)
 
     # -----------------------------------------------------------------------
     # СОТРУДНИК
