@@ -1240,6 +1240,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "📚 *База знаний Studiosuccess*\n\nВыберите статью:",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("Опубликовать проект в журнале", url="https://telegra.ph/Mediabaza-dizajn-izdanij-2024--Studio-Success-08-24")],
+                [InlineKeyboardButton("База фотографов интерьера и архитектуры", url="https://telegra.ph/Baza-fotografov-interera-i-arhitektury-2024-08-26")],
                 [InlineKeyboardButton("← Назад", callback_data="back_to_main")],
             ]),
             parse_mode="Markdown",
