@@ -655,7 +655,7 @@ async def advance_brief(user_id: int, send_fn, context=None):
     text = f"Вопрос {idx + 1} из {len(BRIEF_QUESTIONS)}:\n\n{q['q']}"
 
     if q["type"] == "text":
-        await send_fn(text)
+        msg = await send_fn(text)
     elif q["type"] == "single":
         # question_index зашит в callback_data, чтобы обработчик мог отличить
         # ответ на ТЕКУЩИЙ вопрос от повторного/устаревшего нажатия старой кнопки.
@@ -663,12 +663,28 @@ async def advance_brief(user_id: int, send_fn, context=None):
             [InlineKeyboardButton(opt, callback_data=f"brief_opt:{idx}:{opt_idx}")]
             for opt_idx, opt in enumerate(q["options"])
         ]
-        await send_fn(text, InlineKeyboardMarkup(keyboard))
+        msg = await send_fn(text, InlineKeyboardMarkup(keyboard))
     elif q["type"] == "multi":
         state["current_multi_selection"] = []
         keyboard = [[InlineKeyboardButton(opt, callback_data=f"brief_tog:{opt}")] for opt in q["options"]]
         keyboard.append([InlineKeyboardButton("Готово →", callback_data="brief_done")])
-        await send_fn(text, InlineKeyboardMarkup(keyboard))
+        msg = await send_fn(text, InlineKeyboardMarkup(keyboard))
+    else:
+        msg = None
+
+    if msg is not None and hasattr(msg, "message_id"):
+        state.setdefault("question_message_ids", []).append(msg.message_id)
+
+async def _delete_brief_messages(user_id: int, bot):
+    state = BRIEF_STATES.get(user_id)
+    if not state:
+        return
+    chat_id = user_id  # в личном чате chat_id == user_id
+    for mid in state.get("question_message_ids", []):
+        try:
+            await bot.delete_message(chat_id=chat_id, message_id=mid)
+        except Exception:
+            pass
 
 # ---------------------------------------------------------------------------
 # UI-экраны: удаление предыдущего локального меню/раздела при навигации
@@ -843,6 +859,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     user_id = update.effective_user.id
     if user_id in BRIEF_STATES:
+        await _delete_brief_messages(user_id, context.bot)
         del BRIEF_STATES[user_id]
         save_bot_state()
     text, reply_markup = build_start_menu(user_id)
@@ -952,6 +969,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 state["project_slug"] = project_slug(user_text.strip())
                 brief_path = os.path.join("client_projects", state["project_slug"], "brief.json")
                 if os.path.exists(brief_path):
+                    await _delete_brief_messages(user_id, context.bot)
                     del BRIEF_STATES[user_id]
                     await update.message.reply_text(
                         "Бриф по этому проекту уже заполнен.\n\n"
@@ -967,7 +985,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             save_bot_state()
 
             async def send_fn(text, markup=None):
-                await update.message.reply_text(text, reply_markup=markup)
+                return await update.message.reply_text(text, reply_markup=markup)
 
             await advance_brief(user_id, send_fn, context)
             return
@@ -1204,6 +1222,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "back_to_main":
         if user_id in BRIEF_STATES:
+            await _delete_brief_messages(user_id, context.bot)
             del BRIEF_STATES[user_id]
         if user_id in ACTIVE_PROJECTS and ACTIVE_PROJECTS[user_id].get("mode") in ("staff_chat_compose", "staff_project_chat_compose"):
             del ACTIVE_PROJECTS[user_id]
@@ -1233,12 +1252,15 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif data == "client_fill_brief":
+        if user_id in BRIEF_STATES:
+            await _delete_brief_messages(user_id, context.bot)
         BRIEF_STATES[user_id] = {
             "question_index": 0,
             "project_name": None,
             "project_slug": None,
             "answers": [],
-            "current_multi_selection": []
+            "current_multi_selection": [],
+            "question_message_ids": [],
         }
         save_bot_state()
         await clear_ui_screen(update, context)
@@ -1248,7 +1270,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         async def send_fn(text, markup=None):
             # Не query.message.reply_text: то сообщение уже удалено clear_ui_screen выше.
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=text, reply_markup=markup)
+            return await context.bot.send_message(chat_id=update.effective_chat.id, text=text, reply_markup=markup)
         await advance_brief(user_id, send_fn, context)
 
     elif data.startswith("brief_opt:"):
@@ -1294,7 +1316,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_bot_state()
         await query.edit_message_text(f"✓ {answer}")
         async def send_fn(text, markup=None):
-            await query.message.reply_text(text, reply_markup=markup)
+            return await query.message.reply_text(text, reply_markup=markup)
         await advance_brief(user_id, send_fn, context)
 
     elif data.startswith("brief_tog:"):
@@ -1333,7 +1355,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_bot_state()
         await query.edit_message_text(f"✓ {answer}")
         async def send_fn(text, markup=None):
-            await query.message.reply_text(text, reply_markup=markup)
+            return await query.message.reply_text(text, reply_markup=markup)
         await advance_brief(user_id, send_fn, context)
 
     # -----------------------------------------------------------------------
