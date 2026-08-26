@@ -819,7 +819,7 @@ def build_start_menu(user_id: int):
         keyboard = [
             [InlineKeyboardButton("Заполнить бриф", callback_data="client_fill_brief")],
             [InlineKeyboardButton("Услуги", callback_data="client_services")],
-            [InlineKeyboardButton("Опубликовать проект в журнале", url="https://telegra.ph/Mediabaza-dizajn-izdanij-2024--Studio-Success-08-24")],
+            [InlineKeyboardButton("База знаний", callback_data="client_knowledge_base")],
         ]
     return text, InlineKeyboardMarkup(keyboard)
 
@@ -1221,6 +1221,18 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(
                 [[InlineKeyboardButton("← Назад", callback_data="back_to_main")]]
             ),
+            parse_mode="Markdown",
+        )
+
+    elif data == "client_knowledge_base":
+        await clear_ui_screen(update, context)
+        await send_ui_screen(
+            update, context,
+            "📚 *База знаний Studiosuccess*\n\nВыберите статью:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Опубликовать проект в журнале", url="https://telegra.ph/Mediabaza-dizajn-izdanij-2024--Studio-Success-08-24")],
+                [InlineKeyboardButton("← Назад", callback_data="back_to_main")],
+            ]),
             parse_mode="Markdown",
         )
 
