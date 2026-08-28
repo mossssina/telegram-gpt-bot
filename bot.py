@@ -621,6 +621,124 @@ def _publish_to_telegraph(title: str, text: str) -> str | None:
     return None
 
 
+DIGEST_SYSTEM_PROMPT = (
+    "Ты ассистент SMM-агентства Studiosuccess. "
+    "Тебе предоставлена переписка из рабочего чата проекта за определённый период. "
+    "Составь структурированный дайджест:\n"
+    "— Что обсуждалось и согласовывалось\n"
+    "— Ключевые решения и договорённости\n"
+    "— Запросы и пожелания клиента\n"
+    "— Статус задач (если упоминался)\n"
+    "Пиши кратко и по делу. Если данных мало — честно об этом скажи. "
+    "Отвечай на русском языке."
+)
+
+_MONTH_NAMES = {
+    "январ": 1, "феврал": 2, "март": 3, "апрел": 4,
+    "май": 5, "мае": 5, "мая": 5,
+    "июн": 6, "июл": 7, "август": 8, "сентябр": 9,
+    "октябр": 10, "ноябр": 11, "декабр": 12,
+}
+
+def _parse_digest_period(query: str):
+    """Возвращает (date_from, date_to, label) на основе текстового запроса."""
+    from datetime import timedelta
+    q = query.lower()
+    today = date.today()
+
+    for stem, month_num in _MONTH_NAMES.items():
+        if stem in q:
+            year = today.year
+            m = re.search(r"\b(20\d{2})\b", q)
+            if m:
+                year = int(m.group(1))
+            import calendar
+            last_day = calendar.monthrange(year, month_num)[1]
+            d_from = date(year, month_num, 1)
+            d_to = date(year, month_num, last_day)
+            label = d_from.strftime("%B %Y")
+            return d_from, d_to, label
+
+    if "месяц" in q:
+        return today - timedelta(days=30), today, "последний месяц"
+    if "две недели" in q or "2 недели" in q:
+        return today - timedelta(days=14), today, "последние 2 недели"
+    # default — неделя
+    return today - timedelta(days=7), today, "последнюю неделю"
+
+
+def _load_chat_context_for_period(proj_slug: str, date_from: date, date_to: date) -> str:
+    """Читает chat_context.md и возвращает только записи за нужный период."""
+    projects = load_projects_registry()
+    project = projects.get(proj_slug, {})
+    ctx_file = project.get("chat_context_file",
+                           os.path.join("client_projects", proj_slug, "chat_context.md"))
+    if not os.path.exists(ctx_file):
+        return ""
+    try:
+        with open(ctx_file, "r", encoding="utf-8") as f:
+            content = f.read()
+    except Exception:
+        return ""
+
+    blocks = re.split(r"\n(?=## \d{4}-\d{2}-\d{2})", content)
+    selected = []
+    for block in blocks:
+        m = re.match(r"## (\d{4}-\d{2}-\d{2})", block)
+        if not m:
+            continue
+        try:
+            block_date = date.fromisoformat(m.group(1))
+        except ValueError:
+            continue
+        if date_from <= block_date <= date_to:
+            selected.append(block.strip())
+
+    return "\n\n".join(selected)
+
+
+async def _process_digest_request(update, context, proj_slug: str, query: str):
+    """Генерирует дайджест за период и публикует в Telegraph."""
+    date_from, date_to, label = _parse_digest_period(query)
+    chat_text = _load_chat_context_for_period(proj_slug, date_from, date_to)
+
+    if not chat_text or len(chat_text.strip()) < 50:
+        await update.message.reply_text(
+            f"За {label} в чате не нашлось сообщений для дайджеста."
+        )
+        return
+
+    await update.message.reply_text("⏳ Составляю дайджест...")
+
+    prompt = f"Период: {date_from} — {date_to}\n\nПереписка:\n{chat_text}"
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": DIGEST_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=1500,
+        )
+        digest = response.choices[0].message.content
+    except Exception as e:
+        log.error(f"[DIGEST GPT ERROR] {e}")
+        await update.message.reply_text("Не удалось составить дайджест. Попробуйте ещё раз.")
+        return
+
+    projects = load_projects_registry()
+    project_title = projects.get(proj_slug, {}).get("title", proj_slug)
+    telegraph_title = f"Дайджест {project_title} — {label}"
+    url = _publish_to_telegraph(telegraph_title, digest)
+
+    append_to_chat_context(proj_slug, "Ассистент (дайджест)", digest)
+
+    if url:
+        await update.message.reply_text(f"📋 Дайджест готов: {url}")
+    else:
+        await send_gpt_reply(update, digest)
+
+
 async def _process_photos_for_report(
     update, context, file_ids: list, user_query: str, proj_slug: str
 ):
@@ -1094,6 +1212,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if not clean_text:
             await update.message.reply_text("Напишите вопрос после упоминания бота.")
+            return
+
+        # Дайджест — отдельный сценарий, не через Memory Engine
+        if re.match(r"^дайджест", clean_text.strip().lower()):
+            await _process_digest_request(update, context, proj_slug, clean_text)
             return
 
         # Упоминание — отвечаем через Memory Engine
