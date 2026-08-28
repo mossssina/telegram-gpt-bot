@@ -1850,16 +1850,18 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("Соавторства",        url="https://telegra.ph/Soavtorstva--Studiosuccess-08-26")],
             [InlineKeyboardButton("База блогеров",      url="https://telegra.ph/Baza-reklamnyh-ploshchadok--Studiosuccess-08-26")],
             [InlineKeyboardButton("Доступы",            callback_data="instruction:access")],
+            [InlineKeyboardButton("🤖 Автоотчёт по скриншотам", callback_data="instruction:bot_reports")],
             [InlineKeyboardButton("← Назад",            callback_data="back_to_main")],
         ]
         await clear_ui_screen(update, context)
         await send_ui_screen(update, context, "Выберите инструкцию:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-    elif data == "instruction:access":
+    elif data in ("instruction:access", "instruction:bot_reports"):
         if user_id not in STAFF_USERS:
             await query.edit_message_text("Эта функция доступна только сотрудникам.")
             return
-        text = load_instruction("access")
+        key = data[len("instruction:"):]
+        text = load_instruction(key)
         back_kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("← Назад к инструкциям", callback_data="menu_instructions")],
             [InlineKeyboardButton("Главное меню",           callback_data="back_to_main")],
