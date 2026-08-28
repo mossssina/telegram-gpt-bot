@@ -46,6 +46,8 @@ STAFF_CHAT_ID = -1004342081714
 ACTIVE_PROJECTS = {}
 BRIEF_STATES = {}
 APPROVED_CLIENTS: set = set()  # кэш user_id клиентов, прошедших проверку членства
+PHOTO_BUFFER: dict = {}   # (chat_id, media_group_id) -> буфер фото для альбомов
+PHOTO_TASKS: dict = {}    # (chat_id, media_group_id) -> asyncio.Task
 
 # ---------------------------------------------------------------------------
 # Персистентное состояние бота (переживает перезапуск)
@@ -558,6 +560,110 @@ def split_text_for_telegram(text: str, max_len: int = GPT_REPLY_CHUNK_SIZE) -> l
     if remaining:
         chunks.append(remaining)
     return chunks
+
+
+REPORT_SYSTEM_PROMPT = (
+    "Ты SMM-аналитик агентства Studiosuccess. "
+    "Тебе прислали скриншоты статистики из социальных сетей. "
+    "Проанализируй данные и составь структурированный отчёт: "
+    "охваты, просмотры, вовлечённость, подписчики — выдели ключевые цифры, "
+    "если несколько скриншотов — сравни и обобщи, сделай выводы и краткие рекомендации. "
+    "Отвечай на русском языке, форматируй чётко и по делу."
+)
+
+async def _process_photos_for_report(
+    update, context, file_ids: list, user_query: str, proj_slug: str
+):
+    import base64
+    query = user_query.strip() if user_query.strip() else "составь отчёт по статистике"
+    image_contents = []
+    for file_id in file_ids:
+        try:
+            tg_file = await context.bot.get_file(file_id)
+            file_bytes = await tg_file.download_as_bytearray()
+            b64 = base64.b64encode(bytes(file_bytes)).decode()
+            image_contents.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+            })
+        except Exception as e:
+            log.error(f"[PHOTO DOWNLOAD] file_id={file_id}: {e}")
+
+    if not image_contents:
+        await update.message.reply_text("Не удалось загрузить изображения. Попробуйте ещё раз.")
+        return
+
+    message_content = image_contents + [{"type": "text", "text": query}]
+    try:
+        await update.message.reply_text("⏳ Анализирую статистику...")
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": REPORT_SYSTEM_PROMPT},
+                {"role": "user", "content": message_content},
+            ],
+            max_tokens=1500,
+        )
+        report = response.choices[0].message.content
+    except Exception as e:
+        log.error(f"[VISION GPT ERROR] {e}")
+        await update.message.reply_text("Не удалось проанализировать скриншоты. Попробуйте ещё раз.")
+        return
+
+    append_to_chat_context(proj_slug, "Ассистент (отчёт)", report)
+    await send_gpt_reply(update, report)
+
+
+async def _flush_photo_buffer(context, key: tuple):
+    await asyncio.sleep(3)
+    buf = PHOTO_BUFFER.pop(key, None)
+    PHOTO_TASKS.pop(key, None)
+    if not buf or not buf.get("has_mention"):
+        return
+    await _process_photos_for_report(
+        buf["update"], context, buf["file_ids"], buf["caption"], buf["proj_slug"]
+    )
+
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.photo:
+        return
+    chat_id = update.effective_chat.id
+    thread_id = update.effective_message.message_thread_id
+    if update.effective_chat.type not in ("group", "supergroup"):
+        return
+    proj_slug, _ = get_project_chat_entry(chat_id, thread_id)
+    if not proj_slug:
+        return
+
+    photo = update.message.photo[-1]
+    caption = update.message.caption or ""
+    is_mention, clean_caption = _check_mention(update, context, caption) if caption else (False, "")
+    media_group_id = update.message.media_group_id
+
+    if media_group_id:
+        key = (chat_id, media_group_id)
+        if key not in PHOTO_BUFFER:
+            PHOTO_BUFFER[key] = {
+                "file_ids": [],
+                "caption": "",
+                "proj_slug": proj_slug,
+                "update": update,
+                "has_mention": False,
+            }
+        PHOTO_BUFFER[key]["file_ids"].append(photo.file_id)
+        if is_mention:
+            PHOTO_BUFFER[key]["has_mention"] = True
+            PHOTO_BUFFER[key]["caption"] = clean_caption
+            PHOTO_BUFFER[key]["update"] = update
+
+        if key in PHOTO_TASKS and not PHOTO_TASKS[key].done():
+            PHOTO_TASKS[key].cancel()
+        PHOTO_TASKS[key] = asyncio.create_task(_flush_photo_buffer(context, key))
+    else:
+        if not is_mention:
+            return
+        await _process_photos_for_report(update, context, [photo.file_id], clean_caption, proj_slug)
 
 
 async def send_gpt_reply(update, reply: str):
@@ -1926,6 +2032,7 @@ def main():
     app.add_handler(CommandHandler("project_chat_status", project_chat_status_command))
     app.add_handler(CallbackQueryHandler(handle_button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_error_handler(error_handler)
 
     app.run_polling()
