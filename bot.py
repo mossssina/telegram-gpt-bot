@@ -1016,14 +1016,12 @@ def build_start_menu(user_id: int):
             f"{header}"
             "🤖💜 Привет! Это ассистент *Studiosuccess*\n\n"
             "Что я умею для команды:\n"
-            "— выбрать проект и задать вопрос по нему\n"
             "— найти нужное в брифе клиента\n"
             "— открыть инструкции\n"
             "— написать в чат команды или в чат проекта\n\n"
             "Клиентам доступны: бриф, услуги и база знаний ✦"
         )
         keyboard = [
-            [InlineKeyboardButton("Выбрать проект", callback_data="staff_select_project")],
             [InlineKeyboardButton("📚 Инструкции", callback_data="menu_instructions")],
             [InlineKeyboardButton("Обновить память по проектам", callback_data="menu_update_memory")],
             [InlineKeyboardButton("👁 Доступно для клиентов", callback_data="staff_view_client_menu")],
