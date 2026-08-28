@@ -2044,6 +2044,8 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("База блогеров",      url="https://telegra.ph/Baza-reklamnyh-ploshchadok--Studiosuccess-08-26")],
             [InlineKeyboardButton("Доступы",            callback_data="instruction:access")],
             [InlineKeyboardButton("🤖 Автоотчёт по скриншотам", callback_data="instruction:bot_reports")],
+            [InlineKeyboardButton("📋 Дайджест по проекту", url="https://telegra.ph/Dajdzhest-po-proektu--Studiosuccess-08-28")],
+            [InlineKeyboardButton("📣 Автофидбек",       url="https://telegra.ph/Avtofidbek--Studiosuccess-08-28")],
             [InlineKeyboardButton("← Назад",            callback_data="back_to_main")],
         ]
         await clear_ui_screen(update, context)
