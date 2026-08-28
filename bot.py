@@ -1204,7 +1204,6 @@ def build_start_menu(user_id: int):
         )
         keyboard = [
             [InlineKeyboardButton("📚 Инструкции", callback_data="menu_instructions")],
-            [InlineKeyboardButton("📣 Запросить фидбек", callback_data="staff_request_feedback")],
             [InlineKeyboardButton("Обновить память по проектам", callback_data="menu_update_memory")],
             [InlineKeyboardButton("👁 Доступно для клиентов", callback_data="staff_view_client_menu")],
         ]
@@ -2136,52 +2135,6 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Не удалось отправить сообщение. "
                 "Проверьте, что бот добавлен в чат и имеет право отправлять сообщения."
             )
-
-    elif data == "staff_request_feedback":
-        if user_id not in STAFF_USERS:
-            await query.answer("Нет доступа.", show_alert=True)
-            return
-        chats = load_chats_registry()
-        projects = load_projects_registry()
-        active = [slug for slug, e in chats.items() if projects.get(slug, {}).get("is_active", True)]
-        count = len(active)
-        await clear_ui_screen(update, context)
-        await send_ui_screen(
-            update, context,
-            f"Отправить запрос обратной связи во все активные проектные чаты?\n\nПроектов: {count}",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ Отправить", callback_data="confirm_send_feedback")],
-                [InlineKeyboardButton("← Назад", callback_data="back_to_main")],
-            ])
-        )
-
-    elif data == "confirm_send_feedback":
-        if user_id not in STAFF_USERS:
-            await query.answer("Нет доступа.", show_alert=True)
-            return
-        await query.edit_message_text("⏳ Отправляю...")
-        chats = load_chats_registry()
-        projects = load_projects_registry()
-        sent, failed = 0, 0
-        for slug, chat_entry in chats.items():
-            project = projects.get(slug, {})
-            if not project.get("is_active", True):
-                continue
-            chat_id_int = int(chat_entry["chat_id"])
-            title = project.get("title", slug)
-            try:
-                await _send_feedback_request(context, chat_id_int, slug, title)
-                sent += 1
-            except Exception:
-                failed += 1
-        result = f"📣 Готово! Отправлено: {sent}"
-        if failed:
-            result += f", ошибок: {failed}"
-        await clear_ui_screen(update, context)
-        await send_ui_screen(
-            update, context, result,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("← Назад", callback_data="back_to_main")]])
-        )
 
     elif data.startswith("feedback:"):
         parts = data.split(":")
