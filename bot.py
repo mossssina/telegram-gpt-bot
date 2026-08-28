@@ -5,7 +5,7 @@ import json
 import time
 import asyncio
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time as dtime, timezone
 from dotenv import load_dotenv
 from openai import OpenAI
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -48,6 +48,7 @@ BRIEF_STATES = {}
 APPROVED_CLIENTS: set = set()  # кэш user_id клиентов, прошедших проверку членства
 PHOTO_BUFFER: dict = {}   # (chat_id, media_group_id) -> буфер фото для альбомов
 PHOTO_TASKS: dict = {}    # (chat_id, media_group_id) -> asyncio.Task
+FEEDBACK_STATE: dict = {} # chat_id -> {proj_slug, rating, waiting_comment}
 
 # ---------------------------------------------------------------------------
 # Персистентное состояние бота (переживает перезапуск)
@@ -739,6 +740,68 @@ async def _process_digest_request(update, context, proj_slug: str, query: str):
         await send_gpt_reply(update, digest)
 
 
+def _save_feedback(proj_slug: str, rating: int, comment: str):
+    """Сохраняет оценку клиента в секцию [feedback] memory.md проекта."""
+    projects = load_projects_registry()
+    project = projects.get(proj_slug, {})
+    folder = project.get("folder", os.path.join("client_projects", proj_slug))
+    memory_file = project.get("memory_file", os.path.join(folder, "memory.md"))
+    os.makedirs(os.path.dirname(memory_file), exist_ok=True)
+
+    today = date.today().isoformat()
+    entry = f"- {today}: оценка {rating}/5"
+    if comment:
+        entry += f' — «{comment}»'
+
+    try:
+        content = open(memory_file, "r", encoding="utf-8").read() if os.path.exists(memory_file) else ""
+        section_re = re.compile(r"(#{0,3}\s*\[feedback\][^\n]*\n)(.*?)(?=\n#{0,3}\s*\[|\Z)", re.DOTALL | re.IGNORECASE)
+        m = section_re.search(content)
+        if m:
+            insert = m.start(2) + len(m.group(2).rstrip())
+            content = content[:insert] + f"\n{entry}" + content[insert:]
+        else:
+            content = content.rstrip() + f"\n\n## [feedback]\n{entry}\n"
+        with open(memory_file, "w", encoding="utf-8") as f:
+            f.write(content)
+    except Exception as e:
+        log.error(f"[FEEDBACK SAVE] proj={proj_slug}: {e}")
+
+
+async def _send_feedback_request(context, chat_id: int, slug: str, title: str):
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("⭐ 1", callback_data=f"feedback:{slug}:1"),
+        InlineKeyboardButton("⭐ 2", callback_data=f"feedback:{slug}:2"),
+        InlineKeyboardButton("⭐ 3", callback_data=f"feedback:{slug}:3"),
+        InlineKeyboardButton("⭐ 4", callback_data=f"feedback:{slug}:4"),
+        InlineKeyboardButton("⭐ 5", callback_data=f"feedback:{slug}:5"),
+    ]])
+    try:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                "👋 Привет! Studiosuccess хочет узнать, как вам наша работа в этом месяце.\n\n"
+                "Поставьте оценку от 1 до 5:"
+            ),
+            reply_markup=keyboard,
+        )
+    except Exception as e:
+        log.error(f"[FEEDBACK SEND] chat_id={chat_id} slug={slug}: {e}")
+
+
+async def _job_send_monthly_feedback(context):
+    """Ежемесячная рассылка запроса обратной связи во все активные проектные чаты."""
+    chats = load_chats_registry()
+    projects = load_projects_registry()
+    for slug, chat_entry in chats.items():
+        project = projects.get(slug, {})
+        if not project.get("is_active", True):
+            continue
+        chat_id_int = int(chat_entry["chat_id"])
+        title = project.get("title", slug)
+        await _send_feedback_request(context, chat_id_int, slug, title)
+
+
 async def _process_photos_for_report(
     update, context, file_ids: list, user_query: str, proj_slug: str
 ):
@@ -1141,6 +1204,7 @@ def build_start_menu(user_id: int):
         )
         keyboard = [
             [InlineKeyboardButton("📚 Инструкции", callback_data="menu_instructions")],
+            [InlineKeyboardButton("📣 Запросить фидбек", callback_data="staff_request_feedback")],
             [InlineKeyboardButton("Обновить память по проектам", callback_data="menu_update_memory")],
             [InlineKeyboardButton("👁 Доступно для клиентов", callback_data="staff_view_client_menu")],
         ]
@@ -1205,6 +1269,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sender_name = sender.username or sender.first_name or str(sender.id)
         if not sender.is_bot:
             append_to_chat_context(proj_slug, sender_name, user_text)
+
+        # Если ждём комментарий к оценке фидбека — перехватываем первое сообщение
+        if not sender.is_bot and not is_mention:
+            fb = FEEDBACK_STATE.get(chat_id)
+            if fb and fb.get("waiting_comment"):
+                _save_feedback(fb["proj_slug"], fb["rating"], user_text.strip())
+                del FEEDBACK_STATE[chat_id]
+                await update.message.reply_text("Спасибо за отзыв! 💜")
+                return
 
         # Если не упоминание — молчим
         if not is_mention:
@@ -2064,6 +2137,74 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Проверьте, что бот добавлен в чат и имеет право отправлять сообщения."
             )
 
+    elif data == "staff_request_feedback":
+        if user_id not in STAFF_USERS:
+            await query.answer("Нет доступа.", show_alert=True)
+            return
+        chats = load_chats_registry()
+        projects = load_projects_registry()
+        active = [slug for slug, e in chats.items() if projects.get(slug, {}).get("is_active", True)]
+        count = len(active)
+        await clear_ui_screen(update, context)
+        await send_ui_screen(
+            update, context,
+            f"Отправить запрос обратной связи во все активные проектные чаты?\n\nПроектов: {count}",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Отправить", callback_data="confirm_send_feedback")],
+                [InlineKeyboardButton("← Назад", callback_data="back_to_main")],
+            ])
+        )
+
+    elif data == "confirm_send_feedback":
+        if user_id not in STAFF_USERS:
+            await query.answer("Нет доступа.", show_alert=True)
+            return
+        await query.edit_message_text("⏳ Отправляю...")
+        chats = load_chats_registry()
+        projects = load_projects_registry()
+        sent, failed = 0, 0
+        for slug, chat_entry in chats.items():
+            project = projects.get(slug, {})
+            if not project.get("is_active", True):
+                continue
+            chat_id_int = int(chat_entry["chat_id"])
+            title = project.get("title", slug)
+            try:
+                await _send_feedback_request(context, chat_id_int, slug, title)
+                sent += 1
+            except Exception:
+                failed += 1
+        result = f"📣 Готово! Отправлено: {sent}"
+        if failed:
+            result += f", ошибок: {failed}"
+        await clear_ui_screen(update, context)
+        await send_ui_screen(
+            update, context, result,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("← Назад", callback_data="back_to_main")]])
+        )
+
+    elif data.startswith("feedback:"):
+        parts = data.split(":")
+        slug, rating = parts[1], int(parts[2])
+        fb_chat_id = update.effective_chat.id
+        FEEDBACK_STATE[fb_chat_id] = {"proj_slug": slug, "rating": rating, "waiting_comment": True}
+        stars = "⭐" * rating
+        await query.edit_message_text(
+            f"Оценка {stars} принята 💜\n\n"
+            "Хотите добавить комментарий? Напишите прямо в чат или нажмите «Пропустить».",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("Пропустить →", callback_data=f"feedback_skip:{slug}")
+            ]])
+        )
+
+    elif data.startswith("feedback_skip:"):
+        slug = data[len("feedback_skip:"):]
+        fb_chat_id = update.effective_chat.id
+        fb = FEEDBACK_STATE.pop(fb_chat_id, None)
+        if fb:
+            _save_feedback(fb["proj_slug"], fb["rating"], "")
+        await query.edit_message_text("Спасибо за оценку! 💜")
+
     else:
         # Неизвестный/устаревший callback_data (например, кнопка с чата до
         # обновления бота) — безопасный fallback: ничего не меняем и не вызываем,
@@ -2217,6 +2358,13 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_error_handler(error_handler)
+
+    # Ежемесячный автофидбек: 1-е число в 09:00 МСК (06:00 UTC)
+    app.job_queue.run_monthly(
+        _job_send_monthly_feedback,
+        when=dtime(6, 0, tzinfo=timezone.utc),
+        day=1,
+    )
 
     app.run_polling()
 
