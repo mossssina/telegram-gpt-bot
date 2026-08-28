@@ -562,6 +562,8 @@ def split_text_for_telegram(text: str, max_len: int = GPT_REPLY_CHUNK_SIZE) -> l
     return chunks
 
 
+TELEGRAPH_TOKEN = "19bd9b305ad6b9b4305a7737d361d4ea8b306d33834a46ba34d40f81bd0f"
+
 REPORT_SYSTEM_PROMPT = (
     "Ты SMM-аналитик агентства Studiosuccess. "
     "Тебе прислали скриншоты статистики из социальных сетей. "
@@ -570,6 +572,54 @@ REPORT_SYSTEM_PROMPT = (
     "если несколько скриншотов — сравни и обобщи, сделай выводы и краткие рекомендации. "
     "Отвечай на русском языке, форматируй чётко и по делу."
 )
+
+
+def _report_to_telegraph_nodes(text: str) -> list:
+    import re
+    nodes = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if re.match(r"^#{1,3}\s", line):
+            nodes.append({"tag": "h3", "children": [re.sub(r"^#{1,3}\s+", "", line)]})
+        elif re.match(r"^[-•]\s", line):
+            nodes.append({"tag": "p", "children": ["• " + line[2:]]})
+        elif re.match(r"^\*\*(.+)\*\*$", line):
+            nodes.append({"tag": "p", "children": [{"tag": "b", "children": [line.strip("*")]}]})
+        else:
+            # inline bold
+            parts = re.split(r"\*\*(.+?)\*\*", line)
+            children = []
+            for i, p in enumerate(parts):
+                if i % 2 == 1:
+                    children.append({"tag": "b", "children": [p]})
+                elif p:
+                    children.append(p)
+            nodes.append({"tag": "p", "children": children or [line]})
+    return nodes or [{"tag": "p", "children": [text]}]
+
+
+def _publish_to_telegraph(title: str, text: str) -> str | None:
+    import urllib.request, urllib.parse
+    nodes = _report_to_telegraph_nodes(text)
+    data = urllib.parse.urlencode({
+        "access_token": TELEGRAPH_TOKEN,
+        "title": title,
+        "author_name": "Studiosuccess",
+        "content": json.dumps(nodes),
+        "return_content": "false",
+    }).encode()
+    try:
+        req = urllib.request.Request("https://api.telegra.ph/createPage", data=data)
+        with urllib.request.urlopen(req, timeout=10) as r:
+            resp = json.loads(r.read())
+        if resp.get("ok"):
+            return resp["result"]["url"]
+    except Exception as e:
+        log.error(f"[TELEGRAPH PUBLISH] {e}")
+    return None
+
 
 async def _process_photos_for_report(
     update, context, file_ids: list, user_query: str, proj_slug: str
@@ -611,7 +661,17 @@ async def _process_photos_for_report(
         return
 
     append_to_chat_context(proj_slug, "Ассистент (отчёт)", report)
-    await send_gpt_reply(update, report)
+
+    today = datetime.now().strftime("%d.%m.%Y")
+    projects = load_projects_registry()
+    project_title = projects.get(proj_slug, {}).get("title", proj_slug)
+    telegraph_title = f"Отчёт {project_title} — {today}"
+    url = _publish_to_telegraph(telegraph_title, report)
+
+    if url:
+        await update.message.reply_text(f"📊 Отчёт готов: {url}")
+    else:
+        await send_gpt_reply(update, report)
 
 
 async def _flush_photo_buffer(context, key: tuple):
