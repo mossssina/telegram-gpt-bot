@@ -802,6 +802,53 @@ async def _job_send_monthly_feedback(context):
         await _send_feedback_request(context, chat_id_int, slug, title)
 
 
+async def _job_send_monthly_staff_reminder(context):
+    """Ежемесячное напоминание команде об отправке статистики и проверке ЗП."""
+    try:
+        await context.bot.send_message(
+            chat_id=STAFF_CHAT_ID,
+            text=(
+                "Напоминаю, что нужно отправить статистику по клиентам в чат «статистика» "
+                "и проверить расчёты ЗП в заметке."
+            ),
+        )
+    except Exception as e:
+        log.error(f"[STAFF REMINDER] Не удалось отправить напоминание: {e}")
+
+
+async def _job_send_monthly_report_reminder(context):
+    """Ежемесячное напоминание об отчётах клиентам — 1-е число в 12:30 МСК."""
+    try:
+        await context.bot.send_message(
+            chat_id=STAFF_CHAT_ID,
+            text='Не забудьте прислать отчёт во все клиентские проекты через функцию "отчёт" или самостоятельно.',
+        )
+    except Exception as e:
+        log.error(f"[REPORT REMINDER] Не удалось отправить напоминание: {e}")
+
+
+async def _job_send_weekly_call_reminder(context):
+    """Еженедельное напоминание о созвоне — каждый понедельник в 10:30 МСК."""
+    try:
+        await context.bot.send_message(
+            chat_id=STAFF_CHAT_ID,
+            text="Осталось полчаса до коллективного созвона, подтвердите участие отправкой + сюда в чат.",
+        )
+    except Exception as e:
+        log.error(f"[CALL REMINDER] Не удалось отправить напоминание: {e}")
+
+
+async def _job_send_weekly_digest_reminder(context):
+    """Еженедельное напоминание о дайджесте — каждый вторник в 10:30 МСК."""
+    try:
+        await context.bot.send_message(
+            chat_id=STAFF_CHAT_ID,
+            text='Не забудьте сделать "дайджест" по каждому проекту за прошлую неделю.',
+        )
+    except Exception as e:
+        log.error(f"[DIGEST REMINDER] Не удалось отправить напоминание: {e}")
+
+
 async def _process_photos_for_report(
     update, context, file_ids: list, user_query: str, proj_slug: str
 ):
@@ -2319,6 +2366,34 @@ def main():
         _job_send_monthly_feedback,
         when=dtime(6, 0, tzinfo=timezone.utc),
         day=1,
+    )
+
+    # Ежемесячное напоминание команде: 1-е число в 09:05 МСК (06:05 UTC)
+    app.job_queue.run_monthly(
+        _job_send_monthly_staff_reminder,
+        when=dtime(6, 5, tzinfo=timezone.utc),
+        day=1,
+    )
+
+    # Ежемесячное напоминание об отчётах: 1-е число в 12:30 МСК (09:30 UTC)
+    app.job_queue.run_monthly(
+        _job_send_monthly_report_reminder,
+        when=dtime(9, 30, tzinfo=timezone.utc),
+        day=1,
+    )
+
+    # Еженедельное напоминание о созвоне: каждый понедельник в 10:30 МСК (07:30 UTC)
+    app.job_queue.run_daily(
+        _job_send_weekly_call_reminder,
+        time=dtime(7, 30, tzinfo=timezone.utc),
+        days=(0,),
+    )
+
+    # Еженедельное напоминание о дайджесте: каждый вторник в 10:30 МСК (07:30 UTC)
+    app.job_queue.run_daily(
+        _job_send_weekly_digest_reminder,
+        time=dtime(7, 30, tzinfo=timezone.utc),
+        days=(1,),
     )
 
     app.run_polling()

@@ -6,7 +6,7 @@ set -Eeuo pipefail
 # CONFIG
 ###########################################
 
-PROJECT_DIR="/Users/anastasiiamosina/claude/telegram-gpt-bot"
+PROJECT_DIR="/Users/anastasiiamosina/claude/telegram-gpt-bot_ss"
 
 REMOTE="studiosuccess-server"
 
