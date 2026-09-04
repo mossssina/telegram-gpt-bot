@@ -1,4 +1,4 @@
-﻿# СОАВТОРСТВА
+# СОАВТОРСТВА
 
 ---
 
@@ -32,10 +32,8 @@
 
 - `madique_floor` — 13
 - `M2` — 01 + бюджет
-- `shekhovtzova_tatiana` — 17
 - `mart_da.spb` — 01
 - `anna_zueva_design` — 01
-- `4room.studio` — 01 + бюджет на будущий период
 - `Invisiline` — 15
 
 ---
@@ -56,22 +54,18 @@
 
 ### Александра Орлова
 
-- `ach_interiors` — 01
 - `ink_interior_design` — до 27
 - `Chehova4` — 23
+- `Bono buro` — до 29
 
 ---
 
 ### Мира Ахметова
 
-- `lena__loburets` — до 01
-- `4room.studio` — до 10
+- `lena__loburets` — до 01  + бюджет на будущий период
+- `4room.studio` — 01 + бюджет на будущий период
+- `ach_interiors` — 01
 
----
-
-### Елизавета Баранковская
-
-- `Bono buro` — до 29
 
 ---
 
