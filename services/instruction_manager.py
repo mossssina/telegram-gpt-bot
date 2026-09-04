@@ -16,7 +16,7 @@ INSTRUCTIONS = {
     "reports":       os.path.join(_ROOT, "instructions", "04_reports.md"),
     "chats":         os.path.join(_ROOT, "instructions", "05_chats.md"),
     "coauthorship":  os.path.join(_ROOT, "instructions", "06_soavtorstva.md"),
-    "ad_platforms":  os.path.join(_ROOT, "instructions", "07_advertising-platforms-knowledge-base.md"),
+    "ad_platforms":  os.path.join(_ROOT, "instructions", "07_advertising_platforms_knowledge_base.md"),
     "access":        os.path.join(_ROOT, "instructions", "08_dostupy.md"),
     "bot_reports":   os.path.join(_ROOT, "instructions", "09_reports_from_screenshots.md"),
 }
